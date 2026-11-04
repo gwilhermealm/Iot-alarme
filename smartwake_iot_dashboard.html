@@ -1,0 +1,1151 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartWake IoT - Despertador Inteligente ESP32</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkBg: '#080c14',
+                        cardBg: '#0f172a',
+                        cardBorder: '#1e293b',
+                        electricBlue: '#3b82f6',
+                        electricCyan: '#06b6d4',
+                        neonPurple: '#8b5cf6',
+                        emergencyRed: '#ef4444',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    animation: {
+                        'pulse-glow': 'pulseGlow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'radar-sweep': 'radarSweep 3s linear infinite',
+                        'alarm-flash': 'alarmFlash 1s infinite alternate',
+                    },
+                    keyframes: {
+                        pulseGlow: {
+                            '0%, 100%': { opacity: 1, boxShadow: '0 0 25px rgba(6, 182, 212, 0.4)' },
+                            '50%': { opacity: 0.7, boxShadow: '0 0 10px rgba(6, 182, 212, 0.1)' }
+                        },
+                        alarmFlash: {
+                            '0%': { backgroundColor: 'rgba(15, 23, 42, 0.98)', borderColor: '#ef4444' },
+                            '100%': { backgroundColor: 'rgba(24, 10, 16, 0.99)', borderColor: '#f97316' }
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* CSS Custom Scrollbar & Utility Styles */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #080c14;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #1e293b;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #3b82f6;
+        }
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .glow-cyan {
+            box-shadow: 0 0 20px -3px rgba(6, 182, 212, 0.35);
+        }
+        .glow-blue {
+            box-shadow: 0 0 20px -3px rgba(59, 130, 246, 0.35);
+        }
+        .glow-red {
+            box-shadow: 0 0 35px 2px rgba(239, 68, 68, 0.4);
+        }
+    </style>
+</head>
+<body class="bg-darkBg text-slate-100 font-sans antialiased min-h-screen flex flex-col md:flex-row overflow-x-hidden selection:bg-electricCyan selection:text-black">
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="fixed top-5 right-5 z-50 flex flex-col gap-3 pointer-events-none"></div>
+
+    <!-- SIDEBAR NAVIGATION (Desktop) -->
+    <aside class="hidden md:flex flex-col w-64 bg-cardBg/90 border-r border-cardBorder p-5 justify-between h-screen sticky top-0 z-30">
+        <div>
+            <!-- Brand Logo -->
+            <div class="flex items-center gap-3 mb-8 px-2">
+                <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-electricBlue via-electricCyan to-neonPurple flex items-center justify-center shadow-lg shadow-electricCyan/20">
+                    <i data-lucide="alarm-clock" class="w-6 h-6 text-white"></i>
+                </div>
+                <div>
+                    <h1 class="font-bold text-lg leading-none bg-gradient-to-r from-white via-slate-200 to-electricCyan bg-clip-text text-transparent">SmartWake</h1>
+                    <span class="text-[10px] tracking-widest text-electricCyan font-mono uppercase font-semibold">IoT Connected</span>
+                </div>
+            </div>
+
+            <!-- Navigation Links -->
+            <nav class="space-y-2">
+                <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm transition-all duration-200 bg-electricBlue/10 text-electricBlue border border-electricBlue/20 shadow-sm">
+                    <i data-lucide="layout-dashboard" class="w-5 h-5"></i> Dashboard
+                </button>
+                <button onclick="switchTab('alarms')" id="nav-alarms" class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
+                    <i data-lucide="bell" class="w-5 h-5"></i> Meus Alarmes
+                </button>
+                <button onclick="switchTab('history')" id="nav-history" class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
+                    <i data-lucide="history" class="w-5 h-5"></i> Histórico
+                </button>
+                <button onclick="switchTab('settings')" id="nav-settings" class="nav-btn w-full flex items-center gap-3 px-4 py-3 rounded-xl font-medium text-sm transition-all duration-200 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50">
+                    <i data-lucide="settings" class="w-5 h-5"></i> Configurações
+                </button>
+            </nav>
+        </div>
+
+        <!-- ESP32 Quick Status Widget in Sidebar -->
+        <div class="glass-panel rounded-xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+                <span class="text-xs text-slate-400 font-medium">Status ESP32</span>
+                <span id="sidebar-esp-badge" class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Online
+                </span>
+            </div>
+            <div class="text-xs space-y-1 font-mono text-slate-300">
+                <div class="flex justify-between"><span class="text-slate-500">IP:</span> <span id="sidebar-esp-ip">192.168.1.105</span></div>
+                <div class="flex justify-between"><span class="text-slate-500">Sinal:</span> <span id="sidebar-esp-rssi" class="text-emerald-400">-48 dBm</span></div>
+                <div class="flex justify-between"><span class="text-slate-500">Buzzer:</span> <span id="sidebar-esp-buzzer" class="text-slate-400">DESLIGADO</span></div>
+            </div>
+            <button onclick="toggleESP32Connection()" class="w-full text-xs text-slate-400 hover:text-white py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg transition-colors border border-slate-700">
+                Simular Queda de Sinal
+            </button>
+        </div>
+    </aside>
+
+    <!-- BOTTOM NAVIGATION (Mobile) -->
+    <div class="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-cardBg/95 backdrop-blur-md border-t border-cardBorder px-4 py-2 flex justify-around items-center">
+        <button onclick="switchTab('dashboard')" id="mob-nav-dashboard" class="mob-nav-btn flex flex-col items-center gap-1 text-electricBlue">
+            <i data-lucide="layout-dashboard" class="w-5 h-5"></i>
+            <span class="text-[10px]">Início</span>
+        </button>
+        <button onclick="switchTab('alarms')" id="mob-nav-alarms" class="mob-nav-btn flex flex-col items-center gap-1 text-slate-400">
+            <i data-lucide="bell" class="w-5 h-5"></i>
+            <span class="text-[10px]">Alarmes</span>
+        </button>
+        <button onclick="switchTab('history')" id="mob-nav-history" class="mob-nav-btn flex flex-col items-center gap-1 text-slate-400">
+            <i data-lucide="history" class="w-5 h-5"></i>
+            <span class="text-[10px]">Histórico</span>
+        </button>
+        <button onclick="switchTab('settings')" id="mob-nav-settings" class="mob-nav-btn flex flex-col items-center gap-1 text-slate-400">
+            <i data-lucide="settings" class="w-5 h-5"></i>
+            <span class="text-[10px]">Ajustes</span>
+        </button>
+    </div>
+
+    <!-- MAIN CONTENT AREA -->
+    <main class="flex-1 p-4 md:p-8 max-w-7xl mx-auto pb-24 md:pb-8 w-full overflow-y-auto">
+        <!-- TOP APP BAR / HEADER -->
+        <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8 pb-4 border-b border-cardBorder/60">
+            <div class="flex items-center gap-3">
+                <div class="md:hidden w-9 h-9 rounded-xl bg-gradient-to-tr from-electricBlue to-electricCyan flex items-center justify-center">
+                    <i data-lucide="alarm-clock" class="w-5 h-5 text-white"></i>
+                </div>
+                <div>
+                    <h2 id="page-title" class="text-xl md:text-2xl font-bold text-white tracking-tight">Painel Principal</h2>
+                    <p class="text-xs text-slate-400">Monitoramento e Automação IoT em Tempo Real</p>
+                </div>
+            </div>
+
+            <!-- Clock & Profile Header Controls -->
+            <div class="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-end">
+                <!-- Live Clock Display -->
+                <div class="bg-slate-900/80 border border-slate-800 px-3.5 py-1.5 rounded-xl flex items-center gap-2.5 font-mono shadow-inner">
+                    <i data-lucide="clock" class="w-4 h-4 text-electricCyan animate-pulse"></i>
+                    <span id="header-time" class="text-base font-bold text-white tracking-widest">00:00:00</span>
+                </div>
+
+                <!-- User Profile & Action -->
+                <div class="flex items-center gap-3">
+                    <button onclick="triggerEmergencyAlarmDemo()" class="px-3 py-1.5 rounded-xl text-xs font-bold bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-500 hover:to-orange-500 text-white shadow-lg shadow-red-500/20 transition duration-200 flex items-center gap-1.5">
+                        <i data-lucide="play" class="w-3.5 h-3.5 fill-current"></i> Testar Alarme
+                    </button>
+                    <div class="w-9 h-9 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-bold text-slate-300">
+                        US
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- VIEW 1: DASHBOARD MAIN -->
+        <section id="view-dashboard" class="space-y-6">
+            <!-- HERO ROW: Next Alarm & IoT Connection Status -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- HERO CARD: NEXT ALARM (2 Cols on LG) -->
+                <div class="lg:col-span-2 glass-panel rounded-2xl p-6 relative overflow-hidden border border-electricBlue/20 glow-blue">
+                    <!-- Subtle Tech Background Effect -->
+                    <div class="absolute -right-12 -top-12 w-64 h-64 bg-electricBlue/10 rounded-full blur-3xl pointer-events-none"></div>
+
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                        <div class="flex items-center gap-2">
+                            <span class="px-2.5 py-1 rounded-md bg-electricBlue/20 text-electricBlue font-mono text-xs font-semibold tracking-wider">PRÓXIMO ALARME</span>
+                            <span id="next-alarm-status" class="px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/20 text-emerald-400">ATIVADO</span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs text-slate-400">Ativar/Desativar</span>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="next-alarm-toggle" class="sr-only peer" checked onchange="toggleNextAlarm(this.checked)">
+                                <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-electricBlue"></div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 items-center">
+                        <div>
+                            <div class="flex items-baseline gap-2">
+                                <h1 id="next-alarm-time" class="text-5xl sm:text-6xl font-black text-white tracking-tight">07:30</h1>
+                                <span class="text-slate-400 font-semibold">BRT</span>
+                            </div>
+                            <p id="next-alarm-label" class="text-sm font-medium text-slate-300 mt-1">Acordar para o Trabalho</p>
+                            <p id="next-alarm-days" class="text-xs text-slate-400 mt-0.5">Seg, Ter, Qua, Qui, Sex</p>
+                        </div>
+
+                        <!-- COUNTDOWN TIMER DISPLAY -->
+                        <div class="bg-slate-900/90 rounded-xl p-4 border border-slate-800/80 flex flex-col justify-center items-center text-center">
+                            <span class="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Tempo Restante</span>
+                            <div id="countdown-timer" class="font-mono text-2xl sm:text-3xl font-bold text-electricCyan tracking-wider">
+                                08h 14m 22s
+                            </div>
+                            <div class="mt-2 text-[11px] text-slate-400 flex items-center gap-1">
+                                <i data-lucide="camera" class="w-3.5 h-3.5 text-neonPurple"></i>
+                                Desafio: <span id="next-alarm-challenge" class="text-white font-medium">Escova de Dentes</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- IOT CONNECTION & TELEMETRY CARD (1 Col) -->
+                <div class="glass-panel rounded-2xl p-6 border border-cardBorder flex flex-col justify-between">
+                    <div>
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="font-bold text-slate-200 text-base flex items-center gap-2">
+                                <i data-lucide="cpu" class="w-5 h-5 text-electricCyan"></i> Dispositivo ESP32
+                            </h3>
+                            <span id="card-esp-status-dot" class="flex h-3 w-3 relative">
+                                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                            </span>
+                        </div>
+
+                        <div class="space-y-3 font-mono text-xs">
+                            <div class="flex justify-between items-center py-2 border-b border-slate-800">
+                                <span class="text-slate-400">Estado Wi-Fi</span>
+                                <span id="card-esp-wifi" class="text-emerald-400 font-semibold">Conectado (SmartHome_5G)</span>
+                            </div>
+                            <div class="flex justify-between items-center py-2 border-b border-slate-800">
+                                <span class="text-slate-400">Endereço IP</span>
+                                <span id="card-esp-ip" class="text-slate-200">192.168.1.105</span>
+                            </div>
+                            <div class="flex justify-between items-center py-2 border-b border-slate-800">
+                                <span class="text-slate-400">Intensidade Sinal</span>
+                                <span id="card-esp-rssi" class="text-slate-200">-48 dBm (Forte)</span>
+                            </div>
+                            <div class="flex justify-between items-center py-2 border-b border-slate-800">
+                                <span class="text-slate-400">Buzzer Integrado</span>
+                                <span id="card-esp-buzzer" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400">DESLIGADO</span>
+                            </div>
+                            <div class="flex justify-between items-center py-2">
+                                <span class="text-slate-400">Última Sincronização</span>
+                                <span id="card-esp-sync" class="text-slate-400">há 2 segs</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 pt-3 border-t border-slate-800 flex justify-between items-center text-xs">
+                        <span class="text-slate-400">Firmware v2.4.1</span>
+                        <button onclick="pingESP32()" class="text-electricCyan hover:underline font-medium flex items-center gap-1">
+                            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Testar Ping
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- QUICK STATS & METRICS -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="glass-panel rounded-xl p-4 border border-cardBorder">
+                    <div class="flex items-center justify-between text-slate-400 mb-2">
+                        <span class="text-xs font-medium">Ofensiva de Desafios</span>
+                        <i data-lucide="flame" class="w-4 h-4 text-orange-500"></i>
+                    </div>
+                    <div class="text-2xl font-bold text-white">12 Dias</div>
+                    <p class="text-[11px] text-emerald-400 mt-1">100% de alarmes desligados no prazo</p>
+                </div>
+
+                <div class="glass-panel rounded-xl p-4 border border-cardBorder">
+                    <div class="flex items-center justify-between text-slate-400 mb-2">
+                        <span class="text-xs font-medium">Tempo Média p/ Despertar</span>
+                        <i data-lucide="zap" class="w-4 h-4 text-yellow-400"></i>
+                    </div>
+                    <div class="text-2xl font-bold text-white">48 Segundos</div>
+                    <p class="text-[11px] text-slate-400 mt-1">Validação fotográfica rápida</p>
+                </div>
+
+                <div class="glass-panel rounded-xl p-4 border border-cardBorder">
+                    <div class="flex items-center justify-between text-slate-400 mb-2">
+                        <span class="text-xs font-medium">Total de Alarmes</span>
+                        <i data-lucide="bell" class="w-4 h-4 text-electricBlue"></i>
+                    </div>
+                    <div class="text-2xl font-bold text-white" id="stat-total-alarms">3 Criados</div>
+                    <p class="text-[11px] text-electricBlue mt-1">2 ativos atualmente</p>
+                </div>
+
+                <div class="glass-panel rounded-xl p-4 border border-cardBorder">
+                    <div class="flex items-center justify-between text-slate-400 mb-2">
+                        <span class="text-xs font-medium">Precisão da IA</span>
+                        <i data-lucide="sparkles" class="w-4 h-4 text-neonPurple"></i>
+                    </div>
+                    <div class="text-2xl font-bold text-white">99.4%</div>
+                    <p class="text-[11px] text-neonPurple mt-1">Reconhecimento por imagem</p>
+                </div>
+            </div>
+
+            <!-- DASHBOARD QUICK ALARMS PREVIEW LIST -->
+            <div class="glass-panel rounded-2xl p-6 border border-cardBorder">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="font-bold text-lg text-white">Alarmes Programados</h3>
+                    <button onclick="switchTab('alarms')" class="text-xs font-medium text-electricCyan hover:underline flex items-center gap-1">
+                        Gerenciar todos <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+                    </button>
+                </div>
+                <div id="dashboard-alarms-container" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Dynamic Items render here -->
+                </div>
+            </div>
+        </section>
+
+        <!-- VIEW 2: MEUS ALARMES -->
+        <section id="view-alarms" class="space-y-6 hidden">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h3 class="text-xl font-bold text-white">Configuração de Alarmes</h3>
+                    <p class="text-xs text-slate-400">Adicione e personalize seus horários com missões fotográficas</p>
+                </div>
+                <button onclick="openNewAlarmModal()" class="px-4 py-2.5 rounded-xl bg-gradient-to-r from-electricBlue to-electricCyan text-white font-semibold text-sm shadow-lg shadow-electricBlue/20 hover:opacity-90 transition flex items-center gap-2">
+                    <i data-lucide="plus" class="w-4 h-4"></i> Novo Alarme
+                </button>
+            </div>
+
+            <!-- ALARMS GRID -->
+            <div id="full-alarms-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- Dynamic Alarm Cards Rendered by JS -->
+            </div>
+        </section>
+
+        <!-- VIEW 3: HISTÓRICO -->
+        <section id="view-history" class="space-y-6 hidden">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h3 class="text-xl font-bold text-white">Histórico de Disparos</h3>
+                    <p class="text-xs text-slate-400">Registro de eventos do ESP32 e fotos de desafios concluídos</p>
+                </div>
+                <button onclick="clearHistory()" class="text-xs text-slate-400 hover:text-red-400 transition flex items-center gap-1">
+                    <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Limpar Registro
+                </button>
+            </div>
+
+            <div class="glass-panel rounded-2xl border border-cardBorder overflow-hidden">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm text-slate-300">
+                        <thead class="bg-slate-900/80 text-xs text-slate-400 uppercase font-mono border-b border-cardBorder">
+                            <tr>
+                                <th class="p-4">Data / Horário</th>
+                                <th class="p-4">Alarme</th>
+                                <th class="p-4">Desafio Solicitado</th>
+                                <th class="p-4">Tempo de Resposta</th>
+                                <th class="p-4">Prova Fotográfica</th>
+                                <th class="p-4">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-table-body" class="divide-y divide-slate-800/60 font-sans">
+                            <!-- Dynamic history rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- VIEW 4: CONFIGURAÇÕES -->
+        <section id="view-settings" class="space-y-6 hidden">
+            <div class="glass-panel rounded-2xl p-6 border border-cardBorder max-w-3xl space-y-6">
+                <h3 class="text-xl font-bold text-white border-b border-slate-800 pb-3">Configurações do Sistema & ESP32</h3>
+                
+                <!-- ESP32 Hardware Specs -->
+                <div class="space-y-4">
+                    <h4 class="text-sm font-semibold text-electricCyan uppercase tracking-wider font-mono">Conectividade IoT</h4>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs text-slate-400 mb-1">Endereço IP do ESP32</label>
+                            <input type="text" id="setting-esp-ip" value="192.168.1.105" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-electricBlue">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-slate-400 mb-1">Porta de Comunicação HTTP/WS</label>
+                            <input type="text" value="8080" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-electricBlue">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Buzzer & Audio Options -->
+                <div class="space-y-4 pt-4 border-t border-slate-800">
+                    <h4 class="text-sm font-semibold text-electricCyan uppercase tracking-wider font-mono">Sons e Hardware</h4>
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-white">Buzzer Piezoelétrico do ESP32</p>
+                            <p class="text-xs text-slate-400">Emitir bip contínuo na placa física ao disparar</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" checked class="sr-only peer">
+                            <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-electricBlue"></div>
+                        </label>
+                    </div>
+
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-white">Sintetizador Audio Web no Navegador</p>
+                            <p class="text-xs text-slate-400">Tocar alarme sonoro alto através da caixa de som do dispositivo</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer">
+                            <input type="checkbox" id="setting-sound-web" checked class="sr-only peer">
+                            <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-electricBlue"></div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- AI Sensitivity -->
+                <div class="space-y-4 pt-4 border-t border-slate-800">
+                    <h4 class="text-sm font-semibold text-electricCyan uppercase tracking-wider font-mono">Validação de Fotos (IA)</h4>
+                    <div>
+                        <div class="flex justify-between text-xs text-slate-300 mb-1">
+                            <span>Rigor de Reconhecimento</span>
+                            <span class="text-electricCyan font-mono">Alta (Sensibilidade 85%)</span>
+                        </div>
+                        <input type="range" min="50" max="100" value="85" class="w-full accent-electricCyan bg-slate-800 rounded-lg cursor-pointer">
+                    </div>
+                </div>
+
+                <div class="pt-4 border-t border-slate-800 flex justify-end">
+                    <button onclick="saveSettings()" class="px-5 py-2.5 bg-electricBlue hover:bg-blue-600 text-white font-medium text-sm rounded-xl shadow-lg transition">
+                        Salvar Preferências
+                    </button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- NEW ALARM MODAL -->
+    <div id="alarmModal" class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <div class="glass-panel w-full max-w-md rounded-2xl p-6 border border-cardBorder shadow-2xl relative">
+            <button onclick="closeAlarmModal()" class="absolute top-4 right-4 text-slate-400 hover:text-white">
+                <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+            <h3 id="modal-title" class="text-lg font-bold text-white mb-4">Adicionar Novo Alarme</h3>
+
+            <form id="alarmForm" onsubmit="handleSaveAlarm(event)" class="space-y-4">
+                <!-- Time Selector -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Horário</label>
+                    <input type="time" id="alarm-time-input" required class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-2xl font-mono text-center text-white focus:outline-none focus:border-electricCyan">
+                </div>
+
+                <!-- Label -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Descrição / Nome</label>
+                    <input type="text" id="alarm-label-input" placeholder="Ex: Acordo para Academia" required class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-white focus:outline-none focus:border-electricBlue">
+                </div>
+
+                <!-- Target Photo Challenge -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Desafio Fotográfico Obrigatório</label>
+                    <select id="alarm-challenge-input" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-2.5 text-sm text-white focus:outline-none focus:border-electricBlue">
+                        <option value="Escova de Dentes">🪥 Escova de Dentes</option>
+                        <option value="Caneca de Café">☕ Caneca de Café</option>
+                        <option value="Espelho do Banheiro">🪞 Espelho do Banheiro</option>
+                        <option value="Tênis de Corrida">👟 Tênis de Corrida</option>
+                        <option value="Planta / Vaso">🪴 Planta ou Vaso</option>
+                    </select>
+                </div>
+
+                <!-- Repeat Days -->
+                <div>
+                    <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">Dias de Repetição</label>
+                    <div class="flex justify-between gap-1">
+                        <label class="day-checkbox"><input type="checkbox" value="Dom" class="sr-only peer"><span class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-xs font-semibold text-slate-400 peer-checked:bg-electricBlue peer-checked:text-white peer-checked:border-electricBlue cursor-pointer">D</span></label>
+                        <label class="day-checkbox"><input type="checkbox" value="Seg" class="sr-only peer" checked><span class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-xs font-semibold text-slate-400 peer-checked:bg-electricBlue peer-checked:text-white peer-checked:border-electricBlue cursor-pointer">S</span></label>
+                        <label class="day-checkbox"><input type="checkbox" value="Ter" class="sr-only peer" checked><span class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-xs font-semibold text-slate-400 peer-checked:bg-electricBlue peer-checked:text-white peer-checked:border-electricBlue cursor-pointer">T</span></label>
+                        <label class="day-checkbox"><input type="checkbox" value="Qua" class="sr-only peer" checked><span class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-xs font-semibold text-slate-400 peer-checked:bg-electricBlue peer-checked:text-white peer-checked:border-electricBlue cursor-pointer">Q</span></label>
+                        <label class="day-checkbox"><input type="checkbox" value="Qui" class="sr-only peer" checked><span class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-xs font-semibold text-slate-400 peer-checked:bg-electricBlue peer-checked:text-white peer-checked:border-electricBlue cursor-pointer">Q</span></label>
+                        <label class="day-checkbox"><input type="checkbox" value="Sex" class="sr-only peer" checked><span class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-xs font-semibold text-slate-400 peer-checked:bg-electricBlue peer-checked:text-white peer-checked:border-electricBlue cursor-pointer">S</span></label>
+                        <label class="day-checkbox"><input type="checkbox" value="Sáb" class="sr-only peer"><span class="w-9 h-9 flex items-center justify-center rounded-lg border border-slate-800 bg-slate-900 text-xs font-semibold text-slate-400 peer-checked:bg-electricBlue peer-checked:text-white peer-checked:border-electricBlue cursor-pointer">S</span></label>
+                    </div>
+                </div>
+
+                <div class="flex gap-3 pt-4">
+                    <button type="button" onclick="closeAlarmModal()" class="flex-1 py-2.5 rounded-xl border border-slate-700 text-slate-300 text-sm font-medium hover:bg-slate-800">Cancelar</button>
+                    <button type="submit" class="flex-1 py-2.5 rounded-xl bg-electricBlue hover:bg-blue-600 text-white text-sm font-medium shadow-lg shadow-electricBlue/20">Salvar Alarme</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- FULL SCREEN ACTIVE EMERGENCY ALARM SCREEN -->
+    <div id="emergencyAlarmScreen" class="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-xl flex flex-col justify-between p-4 md:p-8 animate-alarm-flash hidden overflow-y-auto">
+        <!-- Top Emergency Header -->
+        <div class="flex justify-between items-center max-w-4xl mx-auto w-full">
+            <div class="flex items-center gap-2">
+                <span class="w-3 h-3 rounded-full bg-red-500 animate-ping"></span>
+                <span class="font-mono text-xs font-bold text-red-500 tracking-wider uppercase">DISPOSITIVO ESP32 DISPARADO - BUZZER ATIVO</span>
+            </div>
+            <div class="font-mono text-xs text-slate-400">
+                Tempo decorrido: <span id="emergency-elapsed" class="text-orange-400 font-bold">00:12</span>
+            </div>
+        </div>
+
+        <!-- Center Active Mission Content -->
+        <div class="max-w-2xl mx-auto w-full my-auto py-6 space-y-6 text-center">
+            <!-- Pulsing Icon Header -->
+            <div class="relative inline-block">
+                <div class="w-24 h-24 rounded-full bg-red-500/20 border-2 border-red-500/50 flex items-center justify-center mx-auto animate-bounce">
+                    <i data-lucide="bell-ring" class="w-12 h-12 text-red-500"></i>
+                </div>
+                <span class="absolute -top-1 -right-1 flex h-6 w-6">
+                    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span class="relative inline-flex rounded-full h-6 w-6 bg-red-600 items-center justify-center text-[10px] font-bold">!</span>
+                </span>
+            </div>
+
+            <div>
+                <h1 class="text-3xl sm:text-5xl font-black text-white uppercase tracking-tight">ACORDE! ALARME TOCANDO!</h1>
+                <p class="text-sm sm:text-base text-red-300 mt-2 font-medium">O buzzer do ESP32 só desligará quando você cumprir o desafio abaixo.</p>
+            </div>
+
+            <!-- CHALLENGE CARD -->
+            <div class="glass-panel rounded-2xl p-6 border-2 border-red-500/40 glow-red text-left space-y-4">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <span class="text-xs font-mono font-bold text-orange-400 uppercase tracking-widest">MISSÃO DE DESLIGAMENTO</span>
+                    <span class="px-2 py-0.5 rounded text-[10px] bg-red-500/20 text-red-400 font-bold">URGENTE</span>
+                </div>
+
+                <div class="flex items-center gap-4">
+                    <div class="w-14 h-14 rounded-xl bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shrink-0 shadow-lg">
+                        <i data-lucide="camera" class="w-7 h-7 text-white"></i>
+                    </div>
+                    <div>
+                        <h4 id="emergency-challenge-title" class="text-lg font-bold text-white">Tire uma foto da sua Escova de Dentes!</h4>
+                        <p class="text-xs text-slate-300">Aponta a câmera para o objeto para validação instantânea da IA.</p>
+                    </div>
+                </div>
+
+                <!-- CAMERA / UPLOAD INTERACTION ZONE -->
+                <div id="camera-dropzone" class="border-2 border-dashed border-slate-700 rounded-xl p-4 text-center bg-slate-900/60 relative flex flex-col items-center justify-center min-h-[220px]">
+                    <!-- Live Camera Video Feed (If Active) -->
+                    <video id="webcam-feed" class="w-full max-h-60 rounded-lg object-cover hidden" autoplay playsinline></video>
+                    <!-- Captured/Selected Image Preview -->
+                    <img id="image-preview" class="w-full max-h-60 rounded-lg object-contain hidden" alt="Prévia do desafio">
+
+                    <!-- Initial Placeholder State -->
+                    <div id="upload-placeholder" class="space-y-3">
+                        <i data-lucide="aperture" class="w-10 h-10 text-electricCyan mx-auto opacity-80"></i>
+                        <p class="text-xs text-slate-300">Use a câmera do seu dispositivo ou envie uma foto</p>
+                        <div class="flex flex-wrap justify-center gap-3">
+                            <button type="button" onclick="startWebcam()" class="px-3.5 py-2 rounded-xl bg-electricBlue hover:bg-blue-600 text-white text-xs font-semibold flex items-center gap-1.5 transition">
+                                <i data-lucide="video" class="w-4 h-4"></i> Abrir Câmera
+                            </button>
+                            <label class="px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold cursor-pointer border border-slate-700 flex items-center gap-1.5 transition">
+                                <i data-lucide="upload" class="w-4 h-4"></i> Escolher Foto
+                                <input type="file" accept="image/*" class="hidden" onchange="handleFileSelect(event)">
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Webcam Action Controls -->
+                    <div id="webcam-controls" class="hidden absolute bottom-3 flex gap-3">
+                        <button type="button" onclick="captureWebcamPhoto()" class="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-bold shadow-lg flex items-center gap-1">
+                            <i data-lucide="camera" class="w-4 h-4"></i> Capturar Foto
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Validation Button -->
+                <button id="validate-btn" onclick="validateAndTurnOffAlarm()" disabled class="w-full py-3.5 rounded-xl bg-slate-800 text-slate-500 font-bold text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2 cursor-not-allowed">
+                    <i data-lucide="shield-check" class="w-5 h-5"></i> Validar Imagem e Desligar ESP32
+                </button>
+            </div>
+        </div>
+
+        <!-- Footer Notice -->
+        <div class="text-center text-xs text-slate-500 max-w-md mx-auto">
+            Dispositivo ESP32 MAC: 24:6F:28:AB:1C:04 • Web Socket Canal 1
+        </div>
+    </div>
+
+    <!-- VICTORY MODAL -->
+    <div id="victoryModal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 hidden">
+        <div class="glass-panel w-full max-w-md rounded-2xl p-6 border-2 border-emerald-500/50 text-center space-y-4 glow-cyan">
+            <div class="w-16 h-16 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center mx-auto">
+                <i data-lucide="trophy" class="w-8 h-8"></i>
+            </div>
+            <h2 class="text-2xl font-black text-white">DESAFIO CONCLUÍDO!</h2>
+            <p class="text-sm text-slate-300">A IA confirmou o objeto exigido. O sinal de desligamento foi enviado com sucesso ao ESP32!</p>
+            
+            <div class="bg-slate-900 rounded-xl p-3 text-xs font-mono text-slate-400 space-y-1">
+                <div>Comando ESP32: <span class="text-emerald-400 font-bold">BUZZER_STOP_OK</span></div>
+                <div>Tempo de reação: <span id="victory-time" class="text-white font-bold">14s</span></div>
+            </div>
+
+            <button onclick="closeVictoryModal()" class="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-bold text-sm shadow-lg shadow-emerald-500/20 hover:opacity-95 transition">
+                Voltar ao Dashboard
+            </button>
+        </div>
+    </div>
+
+    <!-- MAIN JAVASCRIPT APP LOGIC -->
+    <script>
+        // --- APP STATE & INITIAL DATA ---
+        let state = {
+            espConnected: true,
+            espIp: "192.168.1.105",
+            espBuzzer: false,
+            alarmSoundActive: false,
+            alarmStartTime: null,
+            alarmInterval: null,
+            elapsedSeconds: 0,
+            activeTab: 'dashboard',
+            webcamStream: null,
+            selectedImageData: null,
+            alarms: [
+                { id: 1, time: "07:30", label: "Acordar para o Trabalho", challenge: "Escova de Dentes", days: ["Seg", "Ter", "Qua", "Qui", "Sex"], active: true },
+                { id: 2, time: "06:15", label: "Treino Matinal", challenge: "Tênis de Corrida", days: ["Seg", "Qua", "Sex"], active: true },
+                { id: 3, time: "08:30", label: "Tomar Vitaminas", challenge: "Caneca de Café", days: ["Sáb", "Dom"], active: false }
+            ],
+            history: [
+                { id: 101, date: "Hoje, 07:30", label: "Acordar para o Trabalho", challenge: "Escova de Dentes", duration: "18s", status: "Sucesso", img: "🪥" },
+                { id: 102, date: "Ontem, 07:30", label: "Acordar para o Trabalho", challenge: "Escova de Dentes", duration: "24s", status: "Sucesso", img: "🪥" },
+                { id: 103, date: "01/11, 06:15", label: "Treino Matinal", challenge: "Tênis de Corrida", duration: "32s", status: "Sucesso", img: "👟" }
+            ]
+        };
+
+        // --- WEB AUDIO SYNTHESIZER FOR ALARM SOUND ---
+        let audioCtx = null;
+        let alarmOscillator = null;
+        let alarmGain = null;
+        let alarmBeepInterval = null;
+
+        function startAudioAlarm() {
+            try {
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+
+                // Beeping Siren Synthesizer
+                alarmBeepInterval = setInterval(() => {
+                    if (!state.alarmSoundActive) return;
+                    let osc = audioCtx.createOscillator();
+                    let gain = audioCtx.createGain();
+                    
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5 note
+                    osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.15);
+
+                    gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+
+                    osc.start();
+                    osc.stop(audioCtx.currentTime + 0.22);
+                }, 400);
+
+                state.alarmSoundActive = true;
+            } catch (e) {
+                console.warn("Audio synthesis blocked by browser auto-play policy:", e);
+            }
+        }
+
+        function stopAudioAlarm() {
+            state.alarmSoundActive = false;
+            if (alarmBeepInterval) clearInterval(alarmBeepInterval);
+        }
+
+        // --- INITIALIZATION ---
+        window.onload = function() {
+            lucide.createIcons();
+            startLiveClock();
+            renderAlarms();
+            renderHistory();
+            updateCountdown();
+            setInterval(updateCountdown, 1000);
+        };
+
+        // --- NAVIGATION SYSTEM ---
+        function switchTab(tabId) {
+            state.activeTab = tabId;
+            ['dashboard', 'alarms', 'history', 'settings'].forEach(tab => {
+                document.getElementById(`view-${tab}`).classList.add('hidden');
+            });
+            document.getElementById(`view-${tabId}`).classList.remove('hidden');
+
+            // Update Header Title
+            const titles = {
+                dashboard: 'Painel Principal',
+                alarms: 'Meus Alarmes',
+                history: 'Histórico de Atividades',
+                settings: 'Configurações do ESP32'
+            };
+            document.getElementById('page-title').innerText = titles[tabId];
+
+            // Update Nav Buttons Active Styles
+            document.querySelectorAll('.nav-btn, .mob-nav-btn').forEach(btn => {
+                btn.classList.remove('bg-electricBlue/10', 'text-electricBlue', 'border', 'border-electricBlue/20');
+                btn.classList.add('text-slate-400');
+            });
+            const deskNav = document.getElementById(`nav-${tabId}`);
+            if (deskNav) {
+                deskNav.classList.add('bg-electricBlue/10', 'text-electricBlue', 'border', 'border-electricBlue/20');
+                deskNav.classList.remove('text-slate-400');
+            }
+            const mobNav = document.getElementById(`mob-nav-${tabId}`);
+            if (mobNav) {
+                mobNav.classList.add('text-electricBlue');
+                mobNav.classList.remove('text-slate-400');
+            }
+        }
+
+        // --- LIVE CLOCK & COUNTDOWN ---
+        function startLiveClock() {
+            function tick() {
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString('pt-BR');
+                document.getElementById('header-time').innerText = timeStr;
+            }
+            tick();
+            setInterval(tick, 1000);
+        }
+
+        function updateCountdown() {
+            const activeAlarm = state.alarms.find(a => a.active);
+            if (!activeAlarm) {
+                document.getElementById('countdown-timer').innerText = "Sem alarmes ativos";
+                return;
+            }
+
+            const now = new Date();
+            const [hrs, mins] = activeAlarm.time.split(':').map(Number);
+            let target = new Date();
+            target.setHours(hrs, mins, 0, 0);
+
+            if (target <= now) {
+                target.setDate(target.getDate() + 1);
+            }
+
+            const diffMs = target - now;
+            const hours = Math.floor(diffMs / (1000 * 60 * 60));
+            const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+            const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
+
+            const pad = n => String(n).padStart(2, '0');
+            document.getElementById('countdown-timer').innerText = `${pad(hours)}h ${pad(minutes)}m ${pad(seconds)}s`;
+        }
+
+        // --- ESP32 STATUS TOGGLE & SIMULATION ---
+        function toggleESP32Connection() {
+            state.espConnected = !state.espConnected;
+            const badge = document.getElementById('sidebar-esp-badge');
+            const cardBadge = document.getElementById('card-esp-status-dot');
+            const wifiSpan = document.getElementById('card-esp-wifi');
+
+            if (state.espConnected) {
+                badge.className = "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
+                badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span> Online`;
+                cardBadge.innerHTML = `<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span><span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>`;
+                wifiSpan.innerText = "Conectado (SmartHome_5G)";
+                wifiSpan.className = "text-emerald-400 font-semibold";
+                showToast("Conexão com ESP32 restabelecida!", "success");
+            } else {
+                badge.className = "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-red-500/10 text-red-400 border border-red-500/20";
+                badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-red-400"></span> Offline`;
+                cardBadge.innerHTML = `<span class="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>`;
+                wifiSpan.innerText = "Desconectado";
+                wifiSpan.className = "text-red-400 font-semibold";
+                showToast("Sinal do ESP32 perdido!", "error");
+            }
+        }
+
+        function pingESP32() {
+            if (!state.espConnected) {
+                showToast("Falha ao pingar: ESP32 está offline", "error");
+                return;
+            }
+            showToast("Ping enviado para 192.168.1.105... RTT = 12ms", "info");
+        }
+
+        // --- RENDER ALARMS ---
+        function renderAlarms() {
+            const containerFull = document.getElementById('full-alarms-container');
+            const containerDash = document.getElementById('dashboard-alarms-container');
+            
+            document.getElementById('stat-total-alarms').innerText = `${state.alarms.length} Criados`;
+
+            // Clear
+            containerFull.innerHTML = '';
+            containerDash.innerHTML = '';
+
+            state.alarms.forEach(alarm => {
+                const daysHtml = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'].map(day => {
+                    const activeDay = alarm.days.includes(day);
+                    return `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${activeDay ? 'bg-electricBlue/20 text-electricCyan' : 'bg-slate-800 text-slate-600'}">${day}</span>`;
+                }).join(' ');
+
+                const cardHtml = `
+                    <div class="glass-panel rounded-xl p-5 border border-cardBorder relative group hover:border-slate-700 transition">
+                        <div class="flex justify-between items-start mb-3">
+                            <div>
+                                <span class="text-3xl font-black text-white font-mono">${alarm.time}</span>
+                                <p class="text-xs text-slate-300 font-medium mt-0.5">${alarm.label}</p>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" class="sr-only peer" ${alarm.active ? 'checked' : ''} onchange="toggleAlarmActive(${alarm.id}, this.checked)">
+                                <div class="w-10 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-electricBlue"></div>
+                            </label>
+                        </div>
+                        <div class="flex items-center gap-1.5 text-xs text-neonPurple mb-3">
+                            <i data-lucide="camera" class="w-3.5 h-3.5"></i>
+                            <span>Desafio: <strong>${alarm.challenge}</strong></span>
+                        </div>
+                        <div class="flex justify-between items-center pt-3 border-t border-slate-800/80">
+                            <div class="flex gap-1">${daysHtml}</div>
+                            <button onclick="deleteAlarm(${alarm.id})" class="text-slate-500 hover:text-red-400 transition p-1">
+                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+
+                containerFull.innerHTML += cardHtml;
+            });
+
+            // Populate top 2 for dashboard preview
+            state.alarms.slice(0, 2).forEach(alarm => {
+                containerDash.innerHTML += `
+                    <div class="bg-slate-900/90 rounded-xl p-4 border border-slate-800 flex justify-between items-center">
+                        <div class="flex items-center gap-4">
+                            <div class="text-2xl font-black font-mono text-white">${alarm.time}</div>
+                            <div>
+                                <div class="text-xs font-bold text-slate-200">${alarm.label}</div>
+                                <div class="text-[11px] text-neonPurple">${alarm.challenge}</div>
+                            </div>
+                        </div>
+                        <span class="px-2 py-1 rounded text-xs font-bold ${alarm.active ? 'bg-emerald-500/10 text-emerald-400' : 'bg-slate-800 text-slate-500'}">
+                            ${alarm.active ? 'Ativo' : 'Off'}
+                        </span>
+                    </div>
+                `;
+            });
+
+            lucide.createIcons();
+            updateHeroNextAlarm();
+        }
+
+        function updateHeroNextAlarm() {
+            const activeAlarm = state.alarms.find(a => a.active);
+            if (activeAlarm) {
+                document.getElementById('next-alarm-time').innerText = activeAlarm.time;
+                document.getElementById('next-alarm-label').innerText = activeAlarm.label;
+                document.getElementById('next-alarm-days').innerText = activeAlarm.days.join(', ');
+                document.getElementById('next-alarm-challenge').innerText = activeAlarm.challenge;
+                document.getElementById('next-alarm-status').innerText = "ATIVADO";
+                document.getElementById('next-alarm-status').className = "px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-500/20 text-emerald-400";
+            } else {
+                document.getElementById('next-alarm-time').innerText = "--:--";
+                document.getElementById('next-alarm-label').innerText = "Nenhum alarme ativo";
+                document.getElementById('next-alarm-status').innerText = "DESATIVADO";
+                document.getElementById('next-alarm-status').className = "px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-800 text-slate-400";
+            }
+        }
+
+        function toggleAlarmActive(id, checked) {
+            const alarm = state.alarms.find(a => a.id === id);
+            if (alarm) {
+                alarm.active = checked;
+                renderAlarms();
+                showToast(`Alarme das ${alarm.time} ${checked ? 'ativado' : 'desativado'}.`, "info");
+            }
+        }
+
+        function toggleNextAlarm(checked) {
+            const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
+            if (activeAlarm) {
+                activeAlarm.active = checked;
+                renderAlarms();
+            }
+        }
+
+        function deleteAlarm(id) {
+            state.alarms = state.alarms.filter(a => a.id !== id);
+            renderAlarms();
+            showToast("Alarme removido com sucesso.", "info");
+        }
+
+        // --- NEW ALARM MODAL ---
+        function openNewAlarmModal() {
+            document.getElementById('alarmModal').classList.remove('hidden');
+        }
+
+        function closeAlarmModal() {
+            document.getElementById('alarmModal').classList.add('hidden');
+        }
+
+        function handleSaveAlarm(e) {
+            e.preventDefault();
+            const time = document.getElementById('alarm-time-input').value;
+            const label = document.getElementById('alarm-label-input').value;
+            const challenge = document.getElementById('alarm-challenge-input').value;
+            
+            const days = Array.from(document.querySelectorAll('#alarmModal input[type="checkbox"]:checked')).map(cb => cb.value);
+
+            const newAlarm = {
+                id: Date.now(),
+                time,
+                label,
+                challenge,
+                days: days.length ? days : ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+                active: true
+            };
+
+            state.alarms.push(newAlarm);
+            renderAlarms();
+            closeAlarmModal();
+            showToast("Novo alarme cadastrado e enviado ao ESP32!", "success");
+        }
+
+        // --- HISTORY LOGS ---
+        function renderHistory() {
+            const tbody = document.getElementById('history-table-body');
+            tbody.innerHTML = '';
+            state.history.forEach(item => {
+                tbody.innerHTML += `
+                    <tr class="hover:bg-slate-900/40 transition">
+                        <td class="p-4 font-mono text-xs text-slate-400">${item.date}</td>
+                        <td class="p-4 font-bold text-white">${item.label}</td>
+                        <td class="p-4 text-xs text-neonPurple font-semibold">${item.challenge}</td>
+                        <td class="p-4 font-mono text-xs text-slate-300">${item.duration}</td>
+                        <td class="p-4 text-xl">${item.img}</td>
+                        <td class="p-4">
+                            <span class="px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                Desafio Concluído
+                            </span>
+                        </td>
+                    </tr>
+                `;
+            });
+        }
+
+        function clearHistory() {
+            state.history = [];
+            renderHistory();
+            showToast("Histórico de disparos limpo.", "info");
+        }
+
+        // --- EMERGENCY ACTIVE ALARM SCREEN & WEBCAM ---
+        function triggerEmergencyAlarmDemo() {
+            const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
+            document.getElementById('emergency-challenge-title').innerText = `Tire uma foto da sua ${activeAlarm.challenge}!`;
+            document.getElementById('emergencyAlarmScreen').classList.remove('hidden');
+            
+            // Start Timers & Audio
+            state.elapsedSeconds = 0;
+            state.alarmStartTime = Date.now();
+            state.alarmInterval = setInterval(() => {
+                state.elapsedSeconds++;
+                const pad = n => String(n).padStart(2, '0');
+                const mins = Math.floor(state.elapsedSeconds / 60);
+                const secs = state.elapsedSeconds % 60;
+                document.getElementById('emergency-elapsed').innerText = `${pad(mins)}:${pad(secs)}`;
+            }, 1000);
+
+            // Update ESP32 Buzzer Telemetry
+            state.espBuzzer = true;
+            document.getElementById('card-esp-buzzer').innerText = "DISPARADO";
+            document.getElementById('card-esp-buzzer').className = "px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white animate-pulse";
+            document.getElementById('sidebar-esp-buzzer').innerText = "TOCANDO!";
+            document.getElementById('sidebar-esp-buzzer').className = "text-red-400 font-bold animate-pulse";
+
+            startAudioAlarm();
+        }
+
+        // WEBCAM ACCESS
+        async function startWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                state.webcamStream = stream;
+                const video = document.getElementById('webcam-feed');
+                video.srcObject = stream;
+                video.classList.remove('hidden');
+                document.getElementById('upload-placeholder').classList.add('hidden');
+                document.getElementById('webcam-controls').classList.remove('hidden');
+            } catch (err) {
+                showToast("Não foi possível acessar a câmera. Utilize a seleção de arquivos.", "error");
+            }
+        }
+
+        function captureWebcamPhoto() {
+            const video = document.getElementById('webcam-feed');
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth || 640;
+            canvas.height = video.videoHeight || 480;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            const imageData = canvas.toDataURL('image/png');
+            displayImagePreview(imageData);
+            stopWebcam();
+        }
+
+        function stopWebcam() {
+            if (state.webcamStream) {
+                state.webcamStream.getTracks().forEach(track => track.stop());
+                state.webcamStream = null;
+            }
+            document.getElementById('webcam-feed').classList.add('hidden');
+            document.getElementById('webcam-controls').classList.add('hidden');
+        }
+
+        function handleFileSelect(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    displayImagePreview(e.target.result);
+                };
+                reader.readAsDataURL(file);
+            }
+        }
+
+        function displayImagePreview(dataUrl) {
+            state.selectedImageData = dataUrl;
+            const preview = document.getElementById('image-preview');
+            preview.src = dataUrl;
+            preview.classList.remove('hidden');
+            document.getElementById('upload-placeholder').classList.add('hidden');
+
+            // Enable Validate Button
+            const btn = document.getElementById('validate-btn');
+            btn.disabled = false;
+            btn.className = "w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-electricBlue hover:opacity-95 text-white font-bold text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2 cursor-pointer glow-cyan";
+        }
+
+        function validateAndTurnOffAlarm() {
+            const btn = document.getElementById('validate-btn');
+            btn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i> Analisando foto com visão computacional...`;
+            
+            setTimeout(() => {
+                // Stop Emergency Screen
+                stopAudioAlarm();
+                clearInterval(state.alarmInterval);
+                document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+
+                // Reset Camera Area
+                document.getElementById('image-preview').classList.add('hidden');
+                document.getElementById('upload-placeholder').classList.remove('hidden');
+                btn.disabled = true;
+                btn.className = "w-full py-3.5 rounded-xl bg-slate-800 text-slate-500 font-bold text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2 cursor-not-allowed";
+                btn.innerHTML = `<i data-lucide="shield-check" class="w-5 h-5"></i> Validar Imagem e Desligar ESP32`;
+
+                // Update ESP32 Buzzer state
+                state.espBuzzer = false;
+                document.getElementById('card-esp-buzzer').innerText = "DESLIGADO";
+                document.getElementById('card-esp-buzzer').className = "px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400";
+                document.getElementById('sidebar-esp-buzzer').innerText = "DESLIGADO";
+                document.getElementById('sidebar-esp-buzzer').className = "text-slate-400";
+
+                // Record Victory to History
+                const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
+                state.history.unshift({
+                    id: Date.now(),
+                    date: "Agora mesmo",
+                    label: activeAlarm.label,
+                    challenge: activeAlarm.challenge,
+                    duration: `${state.elapsedSeconds}s`,
+                    status: "Sucesso",
+                    img: "📸"
+                });
+                renderHistory();
+
+                // Open Victory Modal
+                document.getElementById('victory-time').innerText = `${state.elapsedSeconds}s`;
+                document.getElementById('victoryModal').classList.remove('hidden');
+                lucide.createIcons();
+            }, 1800);
+        }
+
+        function closeVictoryModal() {
+            document.getElementById('victoryModal').classList.add('hidden');
+            switchTab('dashboard');
+        }
+
+        function saveSettings() {
+            const ip = document.getElementById('setting-esp-ip').value;
+            state.espIp = ip;
+            document.getElementById('sidebar-esp-ip').innerText = ip;
+            document.getElementById('card-esp-ip').innerText = ip;
+            showToast("Configurações salvas e aplicadas ao microcontrolador!", "success");
+        }
+
+        // --- TOAST NOTIFICATION UTILITY ---
+        function showToast(message, type = "info") {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            
+            const bgColors = {
+                success: 'bg-slate-900 border-emerald-500/50 text-emerald-300',
+                error: 'bg-slate-900 border-red-500/50 text-red-300',
+                info: 'bg-slate-900 border-electricBlue/50 text-electricBlue'
+            };
+
+            const icons = {
+                success: 'check-circle-2',
+                error: 'alert-triangle',
+                info: 'info'
+            };
+
+            toast.className = `px-4 py-3 rounded-xl border backdrop-blur-lg shadow-xl text-xs font-medium flex items-center gap-2.5 transition-all duration-300 transform translate-y-2 opacity-0 ${bgColors[type] || bgColors.info}`;
+            toast.innerHTML = `<i data-lucide="${icons[type]}" class="w-4 h-4 shrink-0"></i> <span>${message}</span>`;
+
+            container.appendChild(toast);
+            lucide.createIcons();
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-2', 'opacity-0');
+            }, 10);
+
+            setTimeout(() => {
+                toast.classList.add('opacity-0', '-translate-y-2');
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
+        }
+    </script>
+</body>
+</html>
