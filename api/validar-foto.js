@@ -2,7 +2,7 @@
 import { GoogleGenAI } from '@google/genai';
 
 export default async function handler(req, res) {
-  // Garante que é uma requisição POST
+  // Garante que apenas requisições POST sejam aceitas
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método não permitido' });
   }
@@ -11,20 +11,20 @@ export default async function handler(req, res) {
     const { image, challenge } = req.body;
 
     if (!image) {
-      return res.status(400).json({ error: 'Nenhuma imagem enviada.' });
+      return res.status(400).json({ error: 'Nenhuma imagem foi enviada.' });
     }
 
-    // Inicializa o cliente do Gemini de forma segura no servidor
+    // Inicializa a IA com a chave segura configurada na Vercel
     const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-    // Trata o Base64 da imagem
+    // Trata o base64 da imagem recebida do front-end
     const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(base64Data, 'base64');
 
-    const objetoDesejado = challenge || "Espelho do Banheiro";
-    const promptText = `Analise esta foto com rigor. O usuário precisa apresentar o seguinte objeto para desligar o alarme: "${objetoDesejado}". A imagem realmente mostra este objeto de forma clara? Responda estritamente no formato JSON: {"status": "APROVADO" ou "REPROVADO", "motivo": "explicação breve"}`;
+    const objetoDesejado = challenge || "Espelho";
+    const promptText = `Analise esta foto com rigor. O usuário precisa apresentar o seguinte objeto: "${objetoDesejado}". A imagem realmente mostra este objeto de forma clara? Responda APENAS com a palavra "SIM" ou "NAO".`;
 
-    // Chamada correta utilizando o modelo gemini-2.5-flash
+    // Chamada oficial utilizando o modelo correto gemini-2.0-flash
     const response = await ai.models.generateContent({
       model: 'gemini-2.0-flash',
       contents: [
@@ -38,13 +38,15 @@ export default async function handler(req, res) {
       ],
     });
 
+    const textoResposta = response.text ? response.text.trim() : "";
+
     return res.status(200).json({ 
       success: true, 
-      resultado: response.text 
+      resultado: textoResposta 
     });
 
   } catch (error) {
-    console.error('Erro ao validar imagem:', error);
-    return res.status(500).json({ error: 'Erro interno ao processar a imagem com a IA.' });
+    console.error('Erro interno na API de validação:', error);
+    return res.status(500).json({ error: error.message || 'Erro ao processar a validação.' });
   }
 }
