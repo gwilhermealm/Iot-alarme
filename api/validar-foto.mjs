@@ -1,8 +1,6 @@
 // api/validar-foto.mjs
-// Serverless Function da Vercel (ESM) usando o SDK @google/genai.
+// Serverless Function da Vercel (ESM). Sem dependências externas: chama a API REST do Gemini com fetch.
 // A chave fica só no servidor, na variável de ambiente GEMINI_API_KEY.
-
-import { GoogleGenAI } from '@google/genai';
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -28,32 +26,47 @@ export default async function handler(req, res) {
     const mimeType = match[1];
     const base64Data = match[2];
 
-    const ai = new GoogleGenAI({ apiKey });
-
     const prompt =
       `Você é um validador de um app de despertador. ` +
       `Olhe a imagem e diga se ela mostra claramente o seguinte objeto: "${challenge}". ` +
       `Responda APENAS com uma palavra: APROVADO se o objeto está visível, ou REPROVADO se não está.`;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType, data: base64Data } },
-          ],
-        },
-      ],
-      config: {
-        temperature: 0,
-        maxOutputTokens: 50,
-        thinkingConfig: { thinkingBudget: 0 },
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+
+    const geminiRes = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
       },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              { inline_data: { mime_type: mimeType, data: base64Data } },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0,
+          maxOutputTokens: 50,
+          thinkingConfig: { thinkingBudget: 0 },
+        },
+      }),
     });
 
-    const texto = (response.text || '').toUpperCase();
+    const data = await geminiRes.json();
+
+    if (!geminiRes.ok) {
+      console.error('Erro Gemini:', JSON.stringify(data));
+      return res.status(502).json({
+        error: data?.error?.message || 'Erro ao consultar o Gemini',
+      });
+    }
+
+    const texto = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').toUpperCase();
     console.log('Gemini respondeu:', texto);
 
     const aprovado =
@@ -62,6 +75,6 @@ export default async function handler(req, res) {
     return res.status(200).json({ resultado: aprovado ? 'APROVADO' : 'REPROVADO' });
   } catch (err) {
     console.error('Erro na função:', err);
-    return res.status(500).json({ error: 'Erro ao consultar o Gemini: ' + err.message });
+    return res.status(500).json({ error: 'Erro interno: ' + err.message });
   }
 }
