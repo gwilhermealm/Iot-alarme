@@ -1,6 +1,38 @@
 // api/validar-foto.mjs
 // Serverless Function da Vercel (ESM). Sem dependências externas: chama a API REST do Gemini com fetch.
 // A chave fica só no servidor, na variável de ambiente GEMINI_API_KEY.
+// Opcional: defina GEMINI_MODEL na Vercel para trocar o modelo sem mexer no código.
+
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const MAX_TENTATIVAS = 4;
+
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function chamarGemini(apiKey, body) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+  let ultimo = null;
+
+  for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({}));
+
+    if (resp.ok) return { ok: true, data };
+
+    ultimo = { ok: false, status: resp.status, data };
+
+    // 429 (limite) e 503/500 (sobrecarga): vale tentar de novo com espera crescente
+    const temporario = [429, 500, 503].includes(resp.status);
+    console.warn(`Gemini tentativa ${tentativa}/${MAX_TENTATIVAS} falhou (${resp.status})`);
+    if (!temporario || tentativa === MAX_TENTATIVAS) break;
+
+    await esperar(700 * tentativa); // 0,7s, 1,4s, 2,1s
+  }
+  return ultimo;
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -31,42 +63,27 @@ export default async function handler(req, res) {
       `Olhe a imagem e diga se ela mostra claramente o seguinte objeto: "${challenge}". ` +
       `Responda APENAS com uma palavra: APROVADO se o objeto está visível, ou REPROVADO se não está.`;
 
-    const MODEL = 'gemini-3.8-flash';
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
-
-    const geminiRes = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': apiKey,
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: prompt },
-              { inline_data: { mime_type: mimeType, data: base64Data } },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0,
-          maxOutputTokens: 512,
+    const resultado = await chamarGemini(apiKey, {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: base64Data } },
+          ],
         },
-      }),
+      ],
+      generationConfig: { temperature: 0, maxOutputTokens: 512 },
     });
 
-    const data = await geminiRes.json();
-
-    if (!geminiRes.ok) {
-      console.error('Erro Gemini:', JSON.stringify(data));
+    if (!resultado.ok) {
+      console.error('Erro Gemini:', JSON.stringify(resultado.data));
       return res.status(502).json({
-        error: data?.error?.message || 'Erro ao consultar o Gemini',
+        error: resultado.data?.error?.message || 'Erro ao consultar o Gemini',
       });
     }
 
-    const texto = (data?.candidates?.[0]?.content?.parts?.[0]?.text || '').toUpperCase();
+    const texto = (resultado.data?.candidates?.[0]?.content?.parts?.[0]?.text || '').toUpperCase();
     console.log('Gemini respondeu:', texto);
 
     const aprovado =
