@@ -1132,141 +1132,83 @@
             btn.disabled = false;
             btn.className = "w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-electricBlue hover:opacity-95 text-white font-bold text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2 cursor-pointer glow-cyan";
         }
-
-     async function validateAndTurnOffAlarm() {
-    const btn = document.getElementById('validate-btn');
-    
-    if (!state.selectedImageData) {
-        alert("Nenhuma foto capturada ou selecionada! Tire uma foto primeiro.");
-        return;
-    }
-
-    // Feedback visual de carregamento no botão
-    btn.innerHTML = `Analisando foto com a IA...`;
-    btn.disabled = true;
-
-    try {
-        // 1. Fazer o upload da foto para o Supabase Storage (bucket alarme-fotos)
-        const res = await fetch(state.selectedImageData);
-        const blob = await res.blob();
-        const fileName = `desafio_${Date.now()}.png`;
-
-        const { error: uploadError } = await supabaseClient.storage
-            .from('alarme-fotos')
-            .upload(fileName, blob, { contentType: 'image/png' });
-
-        if (uploadError) {
-            console.error("Erro no upload para o Supabase:", uploadError);
-        }
-
-        // Pega a URL pública (opcional, caso o bucket exista)
-        const { data: publicUrlData } = supabaseClient.storage
-            .from('alarme-fotos')
-            .getPublicUrl(fileName);
-        const imageUrl = publicUrlData ? publicUrlData.publicUrl : "";
-
-        // 2. Descobrir qual é o desafio exigido
-        const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
-        const requiredChallenge = activeAlarm ? activeAlarm.challenge : "Objeto do Desafio";
-
-        // 3. Tratar o Base64 e o MimeType dinamicamente para evitar dados corrompidos
-        let mimeType = "image/jpeg";
-        let base64Data = state.selectedImageData;
-
-        if (state.selectedImageData.includes(',')) {
-            const parts = state.selectedImageData.split(',');
-            const matchMime = parts[0].match(/:(.*?);/);
-            if (matchMime) {
-                mimeType = matchMime[1];
-            }
-            base64Data = parts[1];
-        }
-
-        // 4. Chamar a API do Gemini Vision
-        const promptText = `Analise esta foto com rigor. O usuário precisa apresentar o seguinte objeto: "${requiredChallenge}". A imagem realmente mostra este objeto de forma clara? Responda APENAS com a palavra "SIM" ou "NAO".`;
-
-        const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json',
-                        'x-goog-api-key': GEMINI_API_KEY 
-
-            },
-            body: JSON.stringify({
-                contents: [{
-                    parts: [
-                        { text: promptText },
-                        {
-                            inline_data: {
-                                mime_type: mimeType,
-                                data: base64Data
-                            }
-                        }
-                    ]
-                }]
-            })
-        });
-
-        const geminiResult = await geminiResponse.json();
-        console.log("Resposta completa do Gemini:", geminiResult);
-
-        // Verifica se houve bloqueio por segurança da API
-        if (geminiResult.promptFeedback?.blockReason) {
-            alert(`A IA bloqueou a imagem por motivos de segurança (${geminiResult.promptFeedback.blockReason}). Tente outra foto.`);
-            btn.innerHTML = `Validar Imagem e Desligar`;
-            btn.disabled = false;
-            return;
-        }
-
-        // Extrai o texto da resposta da IA com segurança
-        const aiText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || "";
-        console.log("Texto extraído da IA:", aiText);
-        const aiAnswer = aiText.trim().toUpperCase();
-
-        // 5. Avaliar o resultado
-        if (aiAnswer.includes("SIM")) {
-            // Sucesso! IA aprovou
-            if (typeof stopAudioAlarm === 'function') stopAudioAlarm();
-            if (state.alarmInterval) clearInterval(state.alarmInterval);
+     
+        async function validateAndTurnOffAlarm() {
+            const btn = document.getElementById('validate-btn');
             
-            document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+            if (!state.selectedImageData) {
+                alert("Nenhuma foto capturada ou selecionada! Tire uma foto primeiro.");
+                return;
+            }
 
-            // Tenta salvar o log no Supabase (se a tabela existir)
+            btn.innerHTML = `Analisando foto com a IA...`;
+            btn.disabled = true;
+
             try {
-                await supabaseClient.from('alarm_logs').insert([{
-                    label: activeAlarm ? activeAlarm.label : 'Alarme',
-                    challenge: requiredChallenge,
-                    duration: `${state.elapsedSeconds}s`,
-                    status: 'Sucesso',
-                    image_url: imageUrl
-                }]);
-            } catch (logErr) {
-                console.log("Aviso: Log não salvo na tabela (ignorado).");
+                const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
+                const requiredChallenge = activeAlarm ? activeAlarm.challenge : "Espelho do Banheiro";
+
+                // Chama a sua Serverless Function na Vercel (evita CORS e protege a API Key)
+                const respostaApi = await fetch('/api/validar-foto', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        image: state.selectedImageData,
+                        challenge: requiredChallenge 
+                    })
+                });
+
+                const dados = await respostaApi.json();
+                
+                if (!respostaApi.ok) {
+                    throw new Error(dados.error || 'Erro na validação');
+                }
+
+                const textoResposta = dados.resultado.toUpperCase();
+                console.log("Resposta da IA:", textoResposta);
+
+                // Avalia se o JSON retornou APROVADO
+                if (textoResposta.includes("APROVADO") || textoResposta.includes('"STATUS": "APROVADO"')) {
+                    // Sucesso! Desliga o alarme sonoro
+                    if (typeof stopAudioAlarm === 'function') stopAudioAlarm();
+                    if (state.alarmInterval) clearInterval(state.alarmInterval);
+                    
+                    document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+
+                    // Salva log no Supabase
+                    try {
+                        await supabaseClient.from('alarm_logs').insert([{
+                            label: activeAlarm ? activeAlarm.label : 'Alarme',
+                            challenge: requiredChallenge,
+                            duration: `${state.elapsedSeconds}s`,
+                            status: 'Sucesso'
+                        }]);
+                    } catch (logErr) {
+                        console.log("Log não gravado na tabela.");
+                    }
+
+                    const victoryModal = document.getElementById('victoryModal');
+                    if (victoryModal) {
+                        document.getElementById('victory-time').innerText = `${state.elapsedSeconds}s`;
+                        victoryModal.classList.remove('hidden');
+                    } else {
+                        alert(`Parabéns! A IA aprovou o seu ${requiredChallenge}!`);
+                    }
+
+                } else {
+                    alert(`A IA rejeitou a foto. Certifique-se de que o objeto (${requiredChallenge}) está visível e com boa iluminação.`);
+                    btn.innerHTML = `Validar Imagem e Desligar`;
+                    btn.disabled = false;
+                }
+
+            } catch (err) {
+                console.error("Erro crítico:", err);
+                alert("Erro ao se comunicar com o servidor de validação. Tente novamente.");
+                btn.innerHTML = `Validar Imagem e Desligar`;
+                btn.disabled = false;
             }
-
-            // Exibe modal de vitória se houver, ou um alerta amigável
-            const victoryModal = document.getElementById('victoryModal');
-            if (victoryModal) {
-                document.getElementById('victory-time').innerText = `${state.elapsedSeconds}s`;
-                victoryModal.classList.remove('hidden');
-            } else {
-                alert(`Parabéns! A IA aprovou a sua foto (${requiredChallenge}) e o alarme foi desligado com sucesso!`);
-            }
-
-        } else {
-            // A IA rejeitou ou a resposta veio vazia/inconclusiva
-            alert(`A IA não conseguiu identificar "${requiredChallenge}" na foto (Resposta da IA: "${aiText || 'Vazia'}"). Tente tirar a foto com melhor iluminação!`);
-            btn.innerHTML = `Validar Imagem e Desligar`;
-            btn.disabled = false;
-        }
-
-    } catch (err) {
-        console.error("Erro crítico na requisição da IA:", err);
-        alert("Erro de conexão ao validar com o Gemini. Verifique sua chave de API e sua internet no Console (F12).");
-        btn.innerHTML = `Validar Imagem e Desligar`;
-        btn.disabled = false;
-    }
 }
-
+    
         function closeVictoryModal() {
             document.getElementById('victoryModal').classList.add('hidden');
             switchTab('dashboard');
