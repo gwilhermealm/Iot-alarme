@@ -26,7 +26,7 @@ export default async function handler(req, res) {
 
     // Chamada correta utilizando o modelo gemini-2.5-flash
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.0-flash',
       contents: [
         {
           inlineData: {
