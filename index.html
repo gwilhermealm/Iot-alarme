@@ -281,44 +281,7 @@
                 </div>
             </div>
 
-            <!-- QUICK STATS & METRICS -->
-            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div class="glass-panel rounded-xl p-4 border border-cardBorder">
-                    <div class="flex items-center justify-between text-slate-400 mb-2">
-                        <span class="text-xs font-medium">Ofensiva de Desafios</span>
-                        <i data-lucide="flame" class="w-4 h-4 text-orange-500"></i>
-                    </div>
-                    <div class="text-2xl font-bold text-white">12 Dias</div>
-                    <p class="text-[11px] text-emerald-400 mt-1">100% de alarmes desligados no prazo</p>
-                </div>
-
-                <div class="glass-panel rounded-xl p-4 border border-cardBorder">
-                    <div class="flex items-center justify-between text-slate-400 mb-2">
-                        <span class="text-xs font-medium">Tempo Média p/ Despertar</span>
-                        <i data-lucide="zap" class="w-4 h-4 text-yellow-400"></i>
-                    </div>
-                    <div class="text-2xl font-bold text-white">48 Segundos</div>
-                    <p class="text-[11px] text-slate-400 mt-1">Validação fotográfica rápida</p>
-                </div>
-
-                <div class="glass-panel rounded-xl p-4 border border-cardBorder">
-                    <div class="flex items-center justify-between text-slate-400 mb-2">
-                        <span class="text-xs font-medium">Total de Alarmes</span>
-                        <i data-lucide="bell" class="w-4 h-4 text-electricBlue"></i>
-                    </div>
-                    <div class="text-2xl font-bold text-white" id="stat-total-alarms">3 Criados</div>
-                    <p class="text-[11px] text-electricBlue mt-1">2 ativos atualmente</p>
-                </div>
-
-                <div class="glass-panel rounded-xl p-4 border border-cardBorder">
-                    <div class="flex items-center justify-between text-slate-400 mb-2">
-                        <span class="text-xs font-medium">Precisão da IA</span>
-                        <i data-lucide="sparkles" class="w-4 h-4 text-neonPurple"></i>
-                    </div>
-                    <div class="text-2xl font-bold text-white">99.4%</div>
-                    <p class="text-[11px] text-neonPurple mt-1">Reconhecimento por imagem</p>
-                </div>
-            </div>
+            
 
             <!-- DASHBOARD QUICK ALARMS PREVIEW LIST -->
             <div class="glass-panel rounded-2xl p-6 border border-cardBorder">
@@ -618,9 +581,20 @@
         </div>
     </div>
 
+    <!-- SDK do Supabase -->
+      <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+      <script src="config.js"></script>
+
     <!-- MAIN JAVASCRIPT APP LOGIC -->
     <script>
-        // --- APP STATE & INITIAL DATA ---
+    // --- CONFIGURAÇÃO DO SUPABASE ---
+        const SUPABASE_URL = 'https://myzcjqcdkdkgnzvjlcuk.supabase.co'; // Cole aqui a URL do seu projeto
+        const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15emNqcWNka2RrZ256dmpsY3VrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM3OTMwNzMsImV4cCI6MjEwOTM2OTA3M30.dw5_j5oymJ71FEfVinUstFJN5KaSbkvmiyZgPe6XhOU'; // Cole aqui a sua chave anon public
+
+        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        const GEMINI_API_KEY = CONFIG.GEMINI_API_KEY;
+
+        // --- APP STATE ATUALIZADO ---
         let state = {
             espConnected: true,
             espIp: "192.168.1.105",
@@ -632,16 +606,8 @@
             activeTab: 'dashboard',
             webcamStream: null,
             selectedImageData: null,
-            alarms: [
-                { id: 1, time: "07:30", label: "Acordar para o Trabalho", challenge: "Escova de Dentes", days: ["Seg", "Ter", "Qua", "Qui", "Sex"], active: true },
-                { id: 2, time: "06:15", label: "Treino Matinal", challenge: "Tênis de Corrida", days: ["Seg", "Qua", "Sex"], active: true },
-                { id: 3, time: "08:30", label: "Tomar Vitaminas", challenge: "Caneca de Café", days: ["Sáb", "Dom"], active: false }
-            ],
-            history: [
-                { id: 101, date: "Hoje, 07:30", label: "Acordar para o Trabalho", challenge: "Escova de Dentes", duration: "18s", status: "Sucesso", img: "🪥" },
-                { id: 102, date: "Ontem, 07:30", label: "Acordar para o Trabalho", challenge: "Escova de Dentes", duration: "24s", status: "Sucesso", img: "🪥" },
-                { id: 103, date: "01/11, 06:15", label: "Treino Matinal", challenge: "Tênis de Corrida", duration: "32s", status: "Sucesso", img: "👟" }
-            ]
+            alarms: [],  // Agora começa vazio e é preenchido pelo banco
+            history: []  // Histórico vindo da tabela alarm_logs
         };
 
         // --- WEB AUDIO SYNTHESIZER FOR ALARM SOUND ---
@@ -691,14 +657,125 @@
         }
 
         // --- INITIALIZATION ---
-        window.onload = function() {
+        window.onload = async function() {
             lucide.createIcons();
             startLiveClock();
-            renderAlarms();
-            renderHistory();
+            await loadAlarmsFromDatabase();
+            await loadHistoryFromDatabase();
             updateCountdown();
             setInterval(updateCountdown, 1000);
         };
+        // Buscar alarmes salvos no Supabase
+        async function loadAlarmsFromDatabase() {
+            const { data, error } = await supabaseClient
+                .from('alarms')
+                .select('*')
+                .order('id', { ascending: true });
+
+            if (error) {
+                console.error("Erro ao carregar alarmes:", error);
+                showToast("Erro ao carregar alarmes do banco.", "error");
+                return;
+            }
+
+            state.alarms = data || [];
+            renderAlarms();
+        }
+        // Buscar histórico salvo no Supabase
+            async function loadHistoryFromDatabase() {
+                const { data, error } = await supabaseClient
+                    .from('alarm_logs')
+                    .select('*')
+                    .order('created_at', { ascending: false })
+                    .limit(10);
+
+                if (error) {
+                    console.error("Erro ao carregar histórico:", error);
+                    return;
+                }
+
+                state.history = data || [];
+                renderHistory();
+            }
+
+          async function handleSaveAlarm(e) {
+            e.preventDefault();
+            const time = document.getElementById('alarm-time-input').value;
+            const label = document.getElementById('alarm-label-input').value;
+            const challenge = document.getElementById('alarm-challenge-input').value;
+            
+            const days = Array.from(document.querySelectorAll('#alarmModal input[type="checkbox"]:checked')).map(cb => cb.value);
+
+            const newAlarm = {
+                time,
+                label,
+                challenge,
+                days: days.length ? days : ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
+                active: true
+            };
+
+            const { data, error } = await supabaseClient
+                .from('alarms')
+                .insert([newAlarm])
+                .select();
+
+            if (error) {
+                console.error("Erro ao salvar alarme:", error);
+                showToast("Erro ao salvar alarme no banco.", "error");
+                return;
+            }
+
+            // Atualiza o estado local e re-renderiza
+            if (data) {
+                state.alarms.push(data[0]);
+                renderAlarms();
+            }
+
+            closeAlarmModal();
+            showToast("Novo alarme cadastrado no banco de dados!", "success");
+        }
+
+
+        async function toggleAlarmActive(id, checked) {
+                const { error } = await supabaseClient
+                    .from('alarms')
+                    .update({ active: checked })
+                    .eq('id', id);
+
+                if (error) {
+                    showToast("Erro ao atualizar status do alarme.", "error");
+                    return;
+                }
+
+                const alarm = state.alarms.find(a => a.id === id);
+                if (alarm) {
+                    alarm.active = checked;
+                    renderAlarms();
+                    showToast(`Alarme das ${alarm.time} ${checked ? 'ativado' : 'desativado'}.`, "info");
+                }
+            }
+
+            async function deleteAlarm(id) {
+                const { error } = await supabaseClient
+                    .from('alarms')
+                    .delete()
+                    .eq('id', id);
+
+                if (error) {
+                    showToast("Erro ao excluir alarme.", "error");
+                    return;
+                }
+
+                state.alarms = state.alarms.filter(a => a.id !== id);
+                renderAlarms();
+                showToast("Alarme removido com sucesso.", "info");
+        }
+
+
+
+
+
+
 
         // --- NAVIGATION SYSTEM ---
         function switchTab(tabId) {
@@ -806,9 +883,7 @@
         function renderAlarms() {
             const containerFull = document.getElementById('full-alarms-container');
             const containerDash = document.getElementById('dashboard-alarms-container');
-            
-            document.getElementById('stat-total-alarms').innerText = `${state.alarms.length} Criados`;
-
+          
             // Clear
             containerFull.innerHTML = '';
             containerDash.innerHTML = '';
@@ -886,14 +961,7 @@
             }
         }
 
-        function toggleAlarmActive(id, checked) {
-            const alarm = state.alarms.find(a => a.id === id);
-            if (alarm) {
-                alarm.active = checked;
-                renderAlarms();
-                showToast(`Alarme das ${alarm.time} ${checked ? 'ativado' : 'desativado'}.`, "info");
-            }
-        }
+      
 
         function toggleNextAlarm(checked) {
             const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
@@ -903,12 +971,7 @@
             }
         }
 
-        function deleteAlarm(id) {
-            state.alarms = state.alarms.filter(a => a.id !== id);
-            renderAlarms();
-            showToast("Alarme removido com sucesso.", "info");
-        }
-
+        
         // --- NEW ALARM MODAL ---
         function openNewAlarmModal() {
             document.getElementById('alarmModal').classList.remove('hidden');
@@ -918,28 +981,7 @@
             document.getElementById('alarmModal').classList.add('hidden');
         }
 
-        function handleSaveAlarm(e) {
-            e.preventDefault();
-            const time = document.getElementById('alarm-time-input').value;
-            const label = document.getElementById('alarm-label-input').value;
-            const challenge = document.getElementById('alarm-challenge-input').value;
-            
-            const days = Array.from(document.querySelectorAll('#alarmModal input[type="checkbox"]:checked')).map(cb => cb.value);
-
-            const newAlarm = {
-                id: Date.now(),
-                time,
-                label,
-                challenge,
-                days: days.length ? days : ['Seg', 'Ter', 'Qua', 'Qui', 'Sex'],
-                active: true
-            };
-
-            state.alarms.push(newAlarm);
-            renderAlarms();
-            closeAlarmModal();
-            showToast("Novo alarme cadastrado e enviado ao ESP32!", "success");
-        }
+     
 
         // --- HISTORY LOGS ---
         function renderHistory() {
@@ -971,31 +1013,65 @@
 
         // --- EMERGENCY ACTIVE ALARM SCREEN & WEBCAM ---
         function triggerEmergencyAlarmDemo() {
-            const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
-            document.getElementById('emergency-challenge-title').innerText = `Tire uma foto da sua ${activeAlarm.challenge}!`;
-            document.getElementById('emergencyAlarmScreen').classList.remove('hidden');
-            
-            // Start Timers & Audio
-            state.elapsedSeconds = 0;
-            state.alarmStartTime = Date.now();
-            state.alarmInterval = setInterval(() => {
-                state.elapsedSeconds++;
-                const pad = n => String(n).padStart(2, '0');
-                const mins = Math.floor(state.elapsedSeconds / 60);
-                const secs = state.elapsedSeconds % 60;
-                document.getElementById('emergency-elapsed').innerText = `${pad(mins)}:${pad(secs)}`;
-            }, 1000);
+    // 1. Busca o alarme ativo ou pega o primeiro disponível para exibir no teste
+    const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
+    
+    if (!activeAlarm) {
+        showToast("Cadastre e ative pelo menos um alarme antes de testar!", "error");
+        return;
+    }
 
-            // Update ESP32 Buzzer Telemetry
-            state.espBuzzer = true;
-            document.getElementById('card-esp-buzzer').innerText = "DISPARADO";
-            document.getElementById('card-esp-buzzer').className = "px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white animate-pulse";
-            document.getElementById('sidebar-esp-buzzer').innerText = "TOCANDO!";
-            document.getElementById('sidebar-esp-buzzer').className = "text-red-400 font-bold animate-pulse";
+    // 2. Atualiza o título do desafio no modal de emergência com base no alarme atual
+    const challengeTitleEl = document.getElementById('emergency-challenge-title');
+    if (challengeTitleEl) {
+        challengeTitleEl.innerText = `Tire uma foto da sua ${activeAlarm.challenge}!`;
+    }
 
-            startAudioAlarm();
+    // 3. Exibe a tela de emergência em tela cheia
+    const emergencyScreen = document.getElementById('emergencyAlarmScreen');
+    if (emergencyScreen) {
+        emergencyScreen.classList.remove('hidden');
+    }
+    
+    // 4. Reseta e inicia os contadores de tempo
+    state.elapsedSeconds = 0;
+    state.alarmStartTime = Date.now();
+    
+    if (state.alarmInterval) clearInterval(state.alarmInterval);
+    
+    state.alarmInterval = setInterval(() => {
+        state.elapsedSeconds++;
+        const pad = n => String(n).padStart(2, '0');
+        const mins = Math.floor(state.elapsedSeconds / 60);
+        const secs = state.elapsedSeconds % 60;
+        const elapsedEl = document.getElementById('emergency-elapsed');
+        if (elapsedEl) {
+            elapsedEl.innerText = `${pad(mins)}:${pad(secs)}`;
         }
+    }, 1000);
 
+    // 5. Simula o estado de buzzer disparado no ESP32 na interface
+    state.espBuzzer = true;
+    const cardBuzzer = document.getElementById('card-esp-buzzer');
+    if (cardBuzzer) {
+        cardBuzzer.innerText = "DISPARADO";
+        cardBuzzer.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white animate-pulse";
+    }
+    
+    const sidebarBuzzer = document.getElementById('sidebar-esp-buzzer');
+    if (sidebarBuzzer) {
+        sidebarBuzzer.innerText = "TOCANDO!";
+        sidebarBuzzer.className = "text-red-400 font-bold animate-pulse";
+    }
+
+    // 6. Inicia o sintetizador de áudio sonoro no navegador
+    startAudioAlarm();
+    
+    // Recarrega os ícones caso necessário
+    if (typeof lucide !== 'undefined') {
+        lucide.createIcons();
+    }
+}
         // WEBCAM ACCESS
         async function startWebcam() {
             try {
@@ -1057,49 +1133,139 @@
             btn.className = "w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-electricBlue hover:opacity-95 text-white font-bold text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2 cursor-pointer glow-cyan";
         }
 
-        function validateAndTurnOffAlarm() {
-            const btn = document.getElementById('validate-btn');
-            btn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i> Analisando foto com visão computacional...`;
-            
-            setTimeout(() => {
-                // Stop Emergency Screen
-                stopAudioAlarm();
-                clearInterval(state.alarmInterval);
-                document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+     async function validateAndTurnOffAlarm() {
+    const btn = document.getElementById('validate-btn');
+    
+    if (!state.selectedImageData) {
+        alert("Nenhuma foto capturada ou selecionada! Tire uma foto primeiro.");
+        return;
+    }
 
-                // Reset Camera Area
-                document.getElementById('image-preview').classList.add('hidden');
-                document.getElementById('upload-placeholder').classList.remove('hidden');
-                btn.disabled = true;
-                btn.className = "w-full py-3.5 rounded-xl bg-slate-800 text-slate-500 font-bold text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2 cursor-not-allowed";
-                btn.innerHTML = `<i data-lucide="shield-check" class="w-5 h-5"></i> Validar Imagem e Desligar ESP32`;
+    // Feedback visual de carregamento no botão
+    btn.innerHTML = `Analisando foto com a IA...`;
+    btn.disabled = true;
 
-                // Update ESP32 Buzzer state
-                state.espBuzzer = false;
-                document.getElementById('card-esp-buzzer').innerText = "DESLIGADO";
-                document.getElementById('card-esp-buzzer').className = "px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400";
-                document.getElementById('sidebar-esp-buzzer').innerText = "DESLIGADO";
-                document.getElementById('sidebar-esp-buzzer').className = "text-slate-400";
+    try {
+        // 1. Fazer o upload da foto para o Supabase Storage (bucket alarme-fotos)
+        const res = await fetch(state.selectedImageData);
+        const blob = await res.blob();
+        const fileName = `desafio_${Date.now()}.png`;
 
-                // Record Victory to History
-                const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
-                state.history.unshift({
-                    id: Date.now(),
-                    date: "Agora mesmo",
-                    label: activeAlarm.label,
-                    challenge: activeAlarm.challenge,
-                    duration: `${state.elapsedSeconds}s`,
-                    status: "Sucesso",
-                    img: "📸"
-                });
-                renderHistory();
+        const { error: uploadError } = await supabaseClient.storage
+            .from('alarme-fotos')
+            .upload(fileName, blob, { contentType: 'image/png' });
 
-                // Open Victory Modal
-                document.getElementById('victory-time').innerText = `${state.elapsedSeconds}s`;
-                document.getElementById('victoryModal').classList.remove('hidden');
-                lucide.createIcons();
-            }, 1800);
+        if (uploadError) {
+            console.error("Erro no upload para o Supabase:", uploadError);
         }
+
+        // Pega a URL pública (opcional, caso o bucket exista)
+        const { data: publicUrlData } = supabaseClient.storage
+            .from('alarme-fotos')
+            .getPublicUrl(fileName);
+        const imageUrl = publicUrlData ? publicUrlData.publicUrl : "";
+
+        // 2. Descobrir qual é o desafio exigido
+        const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
+        const requiredChallenge = activeAlarm ? activeAlarm.challenge : "Objeto do Desafio";
+
+        // 3. Tratar o Base64 e o MimeType dinamicamente para evitar dados corrompidos
+        let mimeType = "image/jpeg";
+        let base64Data = state.selectedImageData;
+
+        if (state.selectedImageData.includes(',')) {
+            const parts = state.selectedImageData.split(',');
+            const matchMime = parts[0].match(/:(.*?);/);
+            if (matchMime) {
+                mimeType = matchMime[1];
+            }
+            base64Data = parts[1];
+        }
+
+        // 4. Chamar a API do Gemini Vision
+        const promptText = `Analise esta foto com rigor. O usuário precisa apresentar o seguinte objeto: "${requiredChallenge}". A imagem realmente mostra este objeto de forma clara? Responda APENAS com a palavra "SIM" ou "NAO".`;
+
+        const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1/models/gemini-1.5-pro:generateContent?key=${GEMINI_API_KEY}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json',
+                        'x-goog-api-key': GEMINI_API_KEY 
+
+            },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [
+                        { text: promptText },
+                        {
+                            inline_data: {
+                                mime_type: mimeType,
+                                data: base64Data
+                            }
+                        }
+                    ]
+                }]
+            })
+        });
+
+        const geminiResult = await geminiResponse.json();
+        console.log("Resposta completa do Gemini:", geminiResult);
+
+        // Verifica se houve bloqueio por segurança da API
+        if (geminiResult.promptFeedback?.blockReason) {
+            alert(`A IA bloqueou a imagem por motivos de segurança (${geminiResult.promptFeedback.blockReason}). Tente outra foto.`);
+            btn.innerHTML = `Validar Imagem e Desligar`;
+            btn.disabled = false;
+            return;
+        }
+
+        // Extrai o texto da resposta da IA com segurança
+        const aiText = geminiResult.candidates?.[0]?.content?.parts?.[0]?.text || "";
+        console.log("Texto extraído da IA:", aiText);
+        const aiAnswer = aiText.trim().toUpperCase();
+
+        // 5. Avaliar o resultado
+        if (aiAnswer.includes("SIM")) {
+            // Sucesso! IA aprovou
+            if (typeof stopAudioAlarm === 'function') stopAudioAlarm();
+            if (state.alarmInterval) clearInterval(state.alarmInterval);
+            
+            document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+
+            // Tenta salvar o log no Supabase (se a tabela existir)
+            try {
+                await supabaseClient.from('alarm_logs').insert([{
+                    label: activeAlarm ? activeAlarm.label : 'Alarme',
+                    challenge: requiredChallenge,
+                    duration: `${state.elapsedSeconds}s`,
+                    status: 'Sucesso',
+                    image_url: imageUrl
+                }]);
+            } catch (logErr) {
+                console.log("Aviso: Log não salvo na tabela (ignorado).");
+            }
+
+            // Exibe modal de vitória se houver, ou um alerta amigável
+            const victoryModal = document.getElementById('victoryModal');
+            if (victoryModal) {
+                document.getElementById('victory-time').innerText = `${state.elapsedSeconds}s`;
+                victoryModal.classList.remove('hidden');
+            } else {
+                alert(`Parabéns! A IA aprovou a sua foto (${requiredChallenge}) e o alarme foi desligado com sucesso!`);
+            }
+
+        } else {
+            // A IA rejeitou ou a resposta veio vazia/inconclusiva
+            alert(`A IA não conseguiu identificar "${requiredChallenge}" na foto (Resposta da IA: "${aiText || 'Vazia'}"). Tente tirar a foto com melhor iluminação!`);
+            btn.innerHTML = `Validar Imagem e Desligar`;
+            btn.disabled = false;
+        }
+
+    } catch (err) {
+        console.error("Erro crítico na requisição da IA:", err);
+        alert("Erro de conexão ao validar com o Gemini. Verifique sua chave de API e sua internet no Console (F12).");
+        btn.innerHTML = `Validar Imagem e Desligar`;
+        btn.disabled = false;
+    }
+}
 
         function closeVictoryModal() {
             document.getElementById('victoryModal').classList.add('hidden');
