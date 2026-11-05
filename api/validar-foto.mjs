@@ -31,7 +31,8 @@ export default async function handler(req, res) {
       `Olhe a imagem e diga se ela mostra claramente o seguinte objeto: "${challenge}". ` +
       `Responda APENAS com uma palavra: APROVADO se o objeto está visível, ou REPROVADO se não está.`;
 
-    const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+    const MODEL = 'gemini-3.8-flash';
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
     const geminiRes = await fetch(url, {
       method: 'POST',
@@ -51,8 +52,7 @@ export default async function handler(req, res) {
         ],
         generationConfig: {
           temperature: 0,
-          maxOutputTokens: 50,
-          thinkingConfig: { thinkingBudget: 0 },
+          maxOutputTokens: 512,
         },
       }),
     });
