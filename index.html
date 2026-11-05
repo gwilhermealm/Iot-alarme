@@ -1132,82 +1132,107 @@
             btn.disabled = false;
             btn.className = "w-full py-3.5 rounded-xl bg-gradient-to-r from-emerald-500 to-electricBlue hover:opacity-95 text-white font-bold text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2 cursor-pointer glow-cyan";
         }
-     
-        async function validateAndTurnOffAlarm() {
-            const btn = document.getElementById('validate-btn');
-            
-            if (!state.selectedImageData) {
-                alert("Nenhuma foto capturada ou selecionada! Tire uma foto primeiro.");
-                return;
-            }
-
-            btn.innerHTML = `Analisando foto com a IA...`;
-            btn.disabled = true;
-
-            try {
-                const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
-                const requiredChallenge = activeAlarm ? activeAlarm.challenge : "Espelho do Banheiro";
-
-                // Chama a sua Serverless Function na Vercel (evita CORS e protege a API Key)
-                const respostaApi = await fetch('/api/validar-foto', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        image: state.selectedImageData,
-                        challenge: requiredChallenge 
-                    })
-                });
-
-                const dados = await respostaApi.json();
-                
-                if (!respostaApi.ok) {
-                    throw new Error(dados.error || 'Erro na validação');
-                }
-
-                const textoResposta = dados.resultado.toUpperCase();
-                console.log("Resposta da IA:", textoResposta);
-
-                // Avalia se o JSON retornou APROVADO
-                if (textoResposta.includes("APROVADO") || textoResposta.includes('"STATUS": "APROVADO"')) {
-                    // Sucesso! Desliga o alarme sonoro
-                    if (typeof stopAudioAlarm === 'function') stopAudioAlarm();
-                    if (state.alarmInterval) clearInterval(state.alarmInterval);
-                    
-                    document.getElementById('emergencyAlarmScreen').classList.add('hidden');
-
-                    // Salva log no Supabase
-                    try {
-                        await supabaseClient.from('alarm_logs').insert([{
-                            label: activeAlarm ? activeAlarm.label : 'Alarme',
-                            challenge: requiredChallenge,
-                            duration: `${state.elapsedSeconds}s`,
-                            status: 'Sucesso'
-                        }]);
-                    } catch (logErr) {
-                        console.log("Log não gravado na tabela.");
-                    }
-
-                    const victoryModal = document.getElementById('victoryModal');
-                    if (victoryModal) {
-                        document.getElementById('victory-time').innerText = `${state.elapsedSeconds}s`;
-                        victoryModal.classList.remove('hidden');
-                    } else {
-                        alert(`Parabéns! A IA aprovou o seu ${requiredChallenge}!`);
-                    }
-
-                } else {
-                    alert(`A IA rejeitou a foto. Certifique-se de que o objeto (${requiredChallenge}) está visível e com boa iluminação.`);
-                    btn.innerHTML = `Validar Imagem e Desligar`;
-                    btn.disabled = false;
-                }
-
-            } catch (err) {
-                console.error("Erro crítico:", err);
-                alert("Erro ao se comunicar com o servidor de validação. Tente novamente.");
-                btn.innerHTML = `Validar Imagem e Desligar`;
-                btn.disabled = false;
-            }
+       
+        function compressImage(dataUrl, maxSize = 1024, quality = 0.7) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.src = dataUrl;
+    });
 }
+async function validateAndTurnOffAlarm() {
+    const btn = document.getElementById('validate-btn');
+
+    if (!state.selectedImageData) {
+        alert("Nenhuma foto capturada ou selecionada! Tire uma foto primeiro.");
+        return;
+    }
+
+    btn.innerHTML = `Analisando foto com a IA...`;
+    btn.disabled = true;
+
+    try {
+        const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
+        const requiredChallenge = activeAlarm ? activeAlarm.challenge : "Espelho do Banheiro";
+
+        // Reduz a foto para não estourar o limite de 4,5 MB da Vercel
+        const imagemLeve = await compressImage(state.selectedImageData);
+
+        const respostaApi = await fetch('/api/validar-foto', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image: imagemLeve,
+                challenge: requiredChallenge
+            })
+        });
+
+        // Lê como texto primeiro, para enxergar o erro real mesmo se não for JSON
+        const bruto = await respostaApi.text();
+        console.log("Status:", respostaApi.status, "Resposta:", bruto);
+
+        let dados;
+        try {
+            dados = JSON.parse(bruto);
+        } catch {
+            throw new Error(`Servidor respondeu ${respostaApi.status}: ${bruto.slice(0, 120)}`);
+        }
+
+        if (!respostaApi.ok) {
+            throw new Error(dados.error || `Erro na validação (${respostaApi.status})`);
+        }
+
+        const textoResposta = String(dados.resultado || '').toUpperCase();
+        console.log("Resposta da IA:", textoResposta);
+
+        if (textoResposta.includes("APROVADO") && !textoResposta.includes("REPROVADO")) {
+            // Sucesso: desliga o alarme
+            if (typeof stopAudioAlarm === 'function') stopAudioAlarm();
+            if (state.alarmInterval) clearInterval(state.alarmInterval);
+
+            document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+
+            // Salva log no Supabase
+            try {
+                await supabaseClient.from('alarm_logs').insert([{
+                    label: activeAlarm ? activeAlarm.label : 'Alarme',
+                    challenge: requiredChallenge,
+                    duration: `${state.elapsedSeconds}s`,
+                    status: 'Sucesso'
+                }]);
+            } catch (logErr) {
+                console.log("Log não gravado na tabela.");
+            }
+
+            const victoryModal = document.getElementById('victoryModal');
+            if (victoryModal) {
+                document.getElementById('victory-time').innerText = `${state.elapsedSeconds}s`;
+                victoryModal.classList.remove('hidden');
+            } else {
+                alert(`Parabéns! A IA aprovou o seu ${requiredChallenge}!`);
+            }
+
+        } else {
+            alert(`A IA rejeitou a foto. Certifique-se de que o objeto (${requiredChallenge}) está visível e com boa iluminação.`);
+            btn.innerHTML = `Validar Imagem e Desligar`;
+            btn.disabled = false;
+        }
+
+    } catch (err) {
+        console.error("Erro crítico:", err);
+        alert("Erro ao validar: " + err.message);
+        btn.innerHTML = `Validar Imagem e Desligar`;
+        btn.disabled = false;
+    }
+}
+
     
         function closeVictoryModal() {
             document.getElementById('victoryModal').classList.add('hidden');
