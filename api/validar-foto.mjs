@@ -4,7 +4,8 @@
 // Opcional: defina GEMINI_MODEL na Vercel para trocar o modelo sem mexer no código.
 
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-const MAX_TENTATIVAS = 4;
+const MAX_TENTATIVAS = 3;
+const TIMEOUT_POR_TENTATIVA_MS = 7000;
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -13,11 +14,22 @@ async function chamarGemini(apiKey, body) {
   let ultimo = null;
 
   for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-      body: JSON.stringify(body),
-    });
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(TIMEOUT_POR_TENTATIVA_MS),
+      });
+    } catch (e) {
+      // Estourou o tempo da tentativa (ou falha de rede): tenta de novo
+      console.warn(`Gemini tentativa ${tentativa}/${MAX_TENTATIVAS} sem resposta: ${e.name}`);
+      ultimo = { ok: false, status: 504, data: { error: { message: 'O Gemini demorou demais para responder' } } };
+      if (tentativa === MAX_TENTATIVAS) break;
+      await esperar(500 * tentativa);
+      continue;
+    }
     const data = await resp.json().catch(() => ({}));
 
     if (resp.ok) return { ok: true, data };

@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/validar-foto.mjs": {
+      "maxDuration": 30
+    }
+  }
+}
