@@ -1,47 +1,57 @@
 // api/validar-foto.mjs
 // Serverless Function da Vercel (ESM). Sem dependências externas: chama a API REST do Gemini com fetch.
 // A chave fica só no servidor, na variável de ambiente GEMINI_API_KEY.
-// Opcional: defina GEMINI_MODEL na Vercel para trocar o modelo sem mexer no código.
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-const MAX_TENTATIVAS = 3;
-const TIMEOUT_POR_TENTATIVA_MS = 7000;
+// Modelos tentados em ordem. Se o primeiro estiver sobrecarregado, passa para o próximo.
+// Opcional: na Vercel, defina GEMINI_MODELS com nomes separados por vírgula para trocar a lista sem mexer no código.
+const MODELOS = (process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || 'gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash')
+  .split(',').map((m) => m.trim()).filter(Boolean);
+const TENTATIVAS_POR_MODELO = 2;
+const TIMEOUT_POR_TENTATIVA_MS = 6000;
+const ORCAMENTO_TOTAL_MS = 24000; // abaixo do maxDuration (30s) do vercel.json
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function chamarGemini(apiKey, body) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
-  let ultimo = null;
+  const inicio = Date.now();
+  let ultimo = { ok: false, status: 500, data: { error: { message: 'Nenhum modelo disponível' } } };
 
-  for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
-    let resp;
-    try {
-      resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(TIMEOUT_POR_TENTATIVA_MS),
-      });
-    } catch (e) {
-      // Estourou o tempo da tentativa (ou falha de rede): tenta de novo
-      console.warn(`Gemini tentativa ${tentativa}/${MAX_TENTATIVAS} sem resposta: ${e.name}`);
-      ultimo = { ok: false, status: 504, data: { error: { message: 'O Gemini demorou demais para responder' } } };
-      if (tentativa === MAX_TENTATIVAS) break;
-      await esperar(500 * tentativa);
-      continue;
+  for (const modelo of MODELOS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`;
+
+    for (let tentativa = 1; tentativa <= TENTATIVAS_POR_MODELO; tentativa++) {
+      if (Date.now() - inicio > ORCAMENTO_TOTAL_MS) return ultimo;
+
+      let resp;
+      try {
+        resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(TIMEOUT_POR_TENTATIVA_MS),
+        });
+      } catch (e) {
+        console.warn(`[${modelo}] tentativa ${tentativa} sem resposta: ${e.name}`);
+        ultimo = { ok: false, status: 504, data: { error: { message: 'O Gemini demorou demais para responder' } } };
+        continue;
+      }
+
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        console.log(`Respondeu o modelo: ${modelo}`);
+        return { ok: true, data };
+      }
+
+      ultimo = { ok: false, status: resp.status, data };
+      console.warn(`[${modelo}] tentativa ${tentativa} falhou (${resp.status}): ${data?.error?.message || ''}`);
+
+      // 404 = modelo inexistente/indisponível para a conta: pula direto para o próximo modelo
+      if (resp.status === 404) break;
+      // Erro definitivo (chave inválida, requisição errada): não adianta insistir
+      if (![429, 500, 503].includes(resp.status)) return ultimo;
+
+      await esperar(600 * tentativa);
     }
-    const data = await resp.json().catch(() => ({}));
-
-    if (resp.ok) return { ok: true, data };
-
-    ultimo = { ok: false, status: resp.status, data };
-
-    // 429 (limite) e 503/500 (sobrecarga): vale tentar de novo com espera crescente
-    const temporario = [429, 500, 503].includes(resp.status);
-    console.warn(`Gemini tentativa ${tentativa}/${MAX_TENTATIVAS} falhou (${resp.status})`);
-    if (!temporario || tentativa === MAX_TENTATIVAS) break;
-
-    await esperar(700 * tentativa); // 0,7s, 1,4s, 2,1s
   }
   return ultimo;
 }
