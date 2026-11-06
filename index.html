@@ -1021,6 +1021,8 @@
         return;
     }
 
+    state.ringingAlarmId = activeAlarm.id;
+
     // 2. Atualiza o título do desafio no modal de emergência com base no alarme atual
     const challengeTitleEl = document.getElementById('emergency-challenge-title');
     if (challengeTitleEl) {
@@ -1168,7 +1170,7 @@
             const timeoutId = setTimeout(() => controller.abort(), 35000);
 
             try {
-                const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
+                const activeAlarm = state.alarms.find(a => a.id === state.ringingAlarmId) || state.alarms.find(a => a.active) || state.alarms[0];
                 const requiredChallenge = activeAlarm ? activeAlarm.challenge : "Espelho do Banheiro";
 
                 const imagemLeve = await compressImage(state.selectedImageData);
@@ -1178,7 +1180,7 @@
                 const respostaApi = await fetch('/api/validar-foto', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: imagemLeve, challenge: requiredChallenge }),
+                    body: JSON.stringify({ image: imagemLeve, alarmId: activeAlarm ? activeAlarm.id : null }),
                     signal: controller.signal
                 });
 

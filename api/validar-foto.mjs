@@ -56,6 +56,33 @@ async function chamarGemini(apiKey, body) {
   return ultimo;
 }
 
+// --- Supabase (leitura do desafio do alarme) ---
+// A URL e a chave "anon" já são públicas (estão no index.html). Podem ser trocadas por variáveis de ambiente.
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://myzcjqcdkdkgnzvjlcuk.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15emNqcWNka2RrZ256dmpsY3VrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM3OTMwNzMsImV4cCI6MjEwOTM2OTA3M30.dw5_j5oymJ71FEfVinUstFJN5KaSbkvmiyZgPe6XhOU';
+
+// Descrição de cada objeto do desafio (as chaves são os mesmos nomes do <select> do cadastro de alarmes).
+// Para um objeto novo, basta adicionar uma linha aqui. Sem descrição, usa o próprio nome.
+const DESCRICOES = {
+  'Escova de Dentes': 'uma escova de dentes (de qualquer cor ou modelo, manual ou elétrica)',
+  'Caneca de Café': 'uma caneca, xícara ou copo de café (de qualquer cor ou material)',
+  'Espelho do Banheiro': 'o espelho de um banheiro (pode aparecer com pia, bancada ou reflexo)',
+  'Tênis de Corrida': 'um tênis esportivo ou de corrida (de qualquer cor ou marca)',
+  'Planta / Vaso': 'uma planta ou um vaso de planta (natural, de qualquer tamanho)',
+};
+
+// Busca o desafio no banco a partir do id do alarme, sem confiar no que a página enviar.
+async function buscarDesafio(alarmId) {
+  const url = `${SUPABASE_URL}/rest/v1/alarms?id=eq.${alarmId}&select=challenge`;
+  const resp = await fetch(url, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!resp.ok) throw new Error(`Supabase respondeu ${resp.status}`);
+  const linhas = await resp.json();
+  return linhas?.[0]?.challenge || null;
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Método não permitido' });
@@ -67,10 +94,23 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { image, challenge } = req.body || {};
-    if (!image || !challenge) {
-      return res.status(400).json({ error: 'Envie image e challenge' });
+    const { image, alarmId } = req.body || {};
+    const id = Number(alarmId);
+    if (!image || !Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'Envie image e alarmId' });
     }
+
+    let challenge;
+    try {
+      challenge = await buscarDesafio(id);
+    } catch (e) {
+      console.error('Falha ao buscar desafio:', e);
+      return res.status(502).json({ error: 'Não foi possível consultar o desafio no banco: ' + e.message });
+    }
+    if (!challenge) {
+      return res.status(404).json({ error: 'Alarme não encontrado' });
+    }
+    console.log(`Alarme ${id} - desafio: ${challenge}`);
 
     // image vem como "data:image/jpeg;base64,AAAA..."
     const match = /^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/.exec(image);
@@ -80,10 +120,12 @@ export default async function handler(req, res) {
     const mimeType = match[1];
     const base64Data = match[2];
 
+    const objeto = DESCRICOES[challenge] || challenge;
     const prompt =
-      `Você é um validador de um app de despertador. ` +
-      `Olhe a imagem e diga se ela mostra claramente o seguinte objeto: "${challenge}". ` +
-      `Responda APENAS com uma palavra: APROVADO se o objeto está visível, ou REPROVADO se não está.`;
+      `Você valida a foto de um despertador. O usuário precisa fotografar: ${objeto}. ` +
+      `Olhe a imagem e responda APROVADO somente se esse objeto real aparece de forma clara e reconhecível. ` +
+      `Responda REPROVADO se o objeto não aparece, se está irreconhecível, ou se a imagem é apenas uma foto de uma tela, impressão ou desenho do objeto. ` +
+      `Responda APENAS com uma palavra: APROVADO ou REPROVADO.`;
 
     const resultado = await chamarGemini(apiKey, {
       contents: [
