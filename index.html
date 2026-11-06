@@ -822,21 +822,40 @@
             setInterval(tick, 1000);
         }
 
+        // --- ALARME MAIS PRÓXIMO (considera horário e dias da semana) ---
+        const NOMES_DIAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+
+        function proximaOcorrencia(alarm) {
+            const [hrs, mins] = String(alarm.time).split(':').map(Number);
+            const dias = (alarm.days && alarm.days.length) ? alarm.days : NOMES_DIAS;
+            const agora = new Date();
+            for (let i = 0; i < 8; i++) {
+                const alvo = new Date(agora);
+                alvo.setDate(agora.getDate() + i);
+                alvo.setHours(hrs, mins, 0, 0);
+                if (alvo > agora && dias.includes(NOMES_DIAS[alvo.getDay()])) return alvo;
+            }
+            return null;
+        }
+
+        function getNextAlarm() {
+            let melhor = null, melhorData = null;
+            state.alarms.filter(a => a.active).forEach(a => {
+                const data = proximaOcorrencia(a);
+                if (data && (!melhorData || data < melhorData)) { melhor = a; melhorData = data; }
+            });
+            return melhor ? { alarm: melhor, date: melhorData } : null;
+        }
+
         function updateCountdown() {
-            const activeAlarm = state.alarms.find(a => a.active);
-            if (!activeAlarm) {
+            const proximo = getNextAlarm();
+            if (!proximo) {
                 document.getElementById('countdown-timer').innerText = "Sem alarmes ativos";
                 return;
             }
 
             const now = new Date();
-            const [hrs, mins] = activeAlarm.time.split(':').map(Number);
-            let target = new Date();
-            target.setHours(hrs, mins, 0, 0);
-
-            if (target <= now) {
-                target.setDate(target.getDate() + 1);
-            }
+            const target = proximo.date;
 
             const diffMs = target - now;
             const hours = Math.floor(diffMs / (1000 * 60 * 60));
@@ -945,7 +964,8 @@
         }
 
         function updateHeroNextAlarm() {
-            const activeAlarm = state.alarms.find(a => a.active);
+            const proximo = getNextAlarm();
+            const activeAlarm = proximo ? proximo.alarm : null;
             if (activeAlarm) {
                 document.getElementById('next-alarm-time').innerText = activeAlarm.time;
                 document.getElementById('next-alarm-label').innerText = activeAlarm.label;
@@ -1012,16 +1032,31 @@
         }
 
         // --- EMERGENCY ACTIVE ALARM SCREEN & WEBCAM ---
-        function triggerEmergencyAlarmDemo() {
-    // 1. Busca o alarme ativo ou pega o primeiro disponível para exibir no teste
-    const activeAlarm = state.alarms.find(a => a.active) || state.alarms[0];
-    
+        async function triggerEmergencyAlarmDemo() {
+    // 1. Usa o alarme ativo mais próximo (ou o primeiro cadastrado, se não houver ativos)
+    const proximo = getNextAlarm();
+    const activeAlarm = proximo ? proximo.alarm : state.alarms[0];
+
     if (!activeAlarm) {
         showToast("Cadastre e ative pelo menos um alarme antes de testar!", "error");
         return;
     }
 
+    // Registra o disparo no banco (o servidor usa este evento para validar e desligar)
+    const { data: ev, error: evError } = await supabaseClient
+        .from('alarm_events')
+        .insert([{ alarm_id: activeAlarm.id }])
+        .select()
+        .single();
+
+    if (evError) {
+        console.error("Erro ao registrar disparo:", evError);
+        showToast("Erro ao registrar o disparo do alarme.", "error");
+        return;
+    }
+
     state.ringingAlarmId = activeAlarm.id;
+    state.ringingEventId = ev.id;
 
     // 2. Atualiza o título do desafio no modal de emergência com base no alarme atual
     const challengeTitleEl = document.getElementById('emergency-challenge-title');
@@ -1180,7 +1215,7 @@
                 const respostaApi = await fetch('/api/validar-foto', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: imagemLeve, alarmId: activeAlarm ? activeAlarm.id : null }),
+                    body: JSON.stringify({ image: imagemLeve, eventId: state.ringingEventId }),
                     signal: controller.signal
                 });
 

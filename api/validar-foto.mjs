@@ -1,9 +1,7 @@
 // api/validar-foto.mjs
-// Serverless Function da Vercel (ESM). Sem dependências externas: chama a API REST do Gemini com fetch.
-// A chave fica só no servidor, na variável de ambiente GEMINI_API_KEY.
+// Serverless Function da Vercel (ESM). Chama a API REST do Gemini com fetch.
+// Variáveis de ambiente na Vercel: GEMINI_API_KEY e SUPABASE_SERVICE_ROLE_KEY (nunca no front-end).
 
-// Modelos tentados em ordem. Se o primeiro estiver sobrecarregado, passa para o próximo.
-// Opcional: na Vercel, defina GEMINI_MODELS com nomes separados por vírgula para trocar a lista sem mexer no código.
 const MODELOS = (process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || 'gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash')
   .split(',').map((m) => m.trim()).filter(Boolean);
 const TENTATIVAS_POR_MODELO = 2;
@@ -45,9 +43,7 @@ async function chamarGemini(apiKey, body) {
       ultimo = { ok: false, status: resp.status, data };
       console.warn(`[${modelo}] tentativa ${tentativa} falhou (${resp.status}): ${data?.error?.message || ''}`);
 
-      // 404 = modelo inexistente/indisponível para a conta: pula direto para o próximo modelo
       if (resp.status === 404) break;
-      // Erro definitivo (chave inválida, requisição errada): não adianta insistir
       if (![429, 500, 503].includes(resp.status)) return ultimo;
 
       await esperar(600 * tentativa);
@@ -56,13 +52,17 @@ async function chamarGemini(apiKey, body) {
   return ultimo;
 }
 
-// --- Supabase (leitura do desafio do alarme) ---
-// A URL e a chave "anon" já são públicas (estão no index.html). Podem ser trocadas por variáveis de ambiente.
+// --- Supabase ---
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://myzcjqcdkdkgnzvjlcuk.supabase.co';
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im15emNqcWNka2RrZ256dmpsY3VrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM3OTMwNzMsImV4cCI6MjEwOTM2OTA3M30.dw5_j5oymJ71FEfVinUstFJN5KaSbkvmiyZgPe6XhOU';
+// Chave de servidor: ignora o RLS. É a única que consegue marcar o evento como "stopped".
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// Descrição de cada objeto do desafio (as chaves são os mesmos nomes do <select> do cadastro de alarmes).
-// Para um objeto novo, basta adicionar uma linha aqui. Sem descrição, usa o próprio nome.
+const headersSupabase = () => ({
+  apikey: SERVICE_KEY,
+  Authorization: `Bearer ${SERVICE_KEY}`,
+  'Content-Type': 'application/json',
+});
+
 const DESCRICOES = {
   'Escova de Dentes': 'uma escova de dentes (de qualquer cor ou modelo, manual ou elétrica)',
   'Caneca de Café': 'uma caneca, xícara ou copo de café (de qualquer cor ou material)',
@@ -71,16 +71,27 @@ const DESCRICOES = {
   'Planta / Vaso': 'uma planta ou um vaso de planta (natural, de qualquer tamanho)',
 };
 
-// Busca o desafio no banco a partir do id do alarme, sem confiar no que a página enviar.
-async function buscarDesafio(alarmId) {
-  const url = `${SUPABASE_URL}/rest/v1/alarms?id=eq.${alarmId}&select=challenge`;
+// Busca o evento e o desafio do alarme a que ele pertence (tudo vem do banco, nada da página).
+async function buscarEvento(eventId) {
+  const url = `${SUPABASE_URL}/rest/v1/alarm_events?id=eq.${eventId}&select=id,status,alarm_id,alarms(challenge)`;
+  const resp = await fetch(url, { headers: headersSupabase(), signal: AbortSignal.timeout(5000) });
+  if (!resp.ok) throw new Error(`Supabase respondeu ${resp.status}`);
+  const linhas = await resp.json();
+  return linhas?.[0] || null;
+}
+
+// Marca como "stopped" só se ainda estiver "ringing". Retorna true se conseguiu.
+async function encerrarEvento(eventId) {
+  const url = `${SUPABASE_URL}/rest/v1/alarm_events?id=eq.${eventId}&status=eq.ringing`;
   const resp = await fetch(url, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    method: 'PATCH',
+    headers: { ...headersSupabase(), Prefer: 'return=representation' },
+    body: JSON.stringify({ status: 'stopped', stopped_at: new Date().toISOString() }),
     signal: AbortSignal.timeout(5000),
   });
   if (!resp.ok) throw new Error(`Supabase respondeu ${resp.status}`);
   const linhas = await resp.json();
-  return linhas?.[0]?.challenge || null;
+  return linhas.length > 0;
 }
 
 export default async function handler(req, res) {
@@ -89,34 +100,32 @@ export default async function handler(req, res) {
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY não configurada no servidor' });
-  }
+  if (!apiKey) return res.status(500).json({ error: 'GEMINI_API_KEY não configurada no servidor' });
+  if (!SERVICE_KEY) return res.status(500).json({ error: 'SUPABASE_SERVICE_ROLE_KEY não configurada no servidor' });
 
   try {
-    const { image, alarmId } = req.body || {};
-    const id = Number(alarmId);
+    const { image, eventId } = req.body || {};
+    const id = Number(eventId);
     if (!image || !Number.isInteger(id) || id <= 0) {
-      return res.status(400).json({ error: 'Envie image e alarmId' });
+      return res.status(400).json({ error: 'Envie image e eventId' });
     }
 
-    let challenge;
+    let evento;
     try {
-      challenge = await buscarDesafio(id);
+      evento = await buscarEvento(id);
     } catch (e) {
-      console.error('Falha ao buscar desafio:', e);
-      return res.status(502).json({ error: 'Não foi possível consultar o desafio no banco: ' + e.message });
+      console.error('Falha ao buscar evento:', e);
+      return res.status(502).json({ error: 'Não foi possível consultar o evento no banco: ' + e.message });
     }
-    if (!challenge) {
-      return res.status(404).json({ error: 'Alarme não encontrado' });
-    }
-    console.log(`Alarme ${id} - desafio: ${challenge}`);
+    if (!evento) return res.status(404).json({ error: 'Evento não encontrado' });
+    if (evento.status !== 'ringing') return res.status(409).json({ error: 'Este alarme já foi desligado' });
 
-    // image vem como "data:image/jpeg;base64,AAAA..."
+    const challenge = evento.alarms?.challenge;
+    if (!challenge) return res.status(404).json({ error: 'Alarme do evento não encontrado' });
+    console.log(`Evento ${id} (alarme ${evento.alarm_id}) - desafio: ${challenge}`);
+
     const match = /^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/.exec(image);
-    if (!match) {
-      return res.status(400).json({ error: 'Formato de imagem inválido' });
-    }
+    if (!match) return res.status(400).json({ error: 'Formato de imagem inválido' });
     const mimeType = match[1];
     const base64Data = match[2];
 
@@ -128,30 +137,33 @@ export default async function handler(req, res) {
       `Responda APENAS com uma palavra: APROVADO ou REPROVADO.`;
 
     const resultado = await chamarGemini(apiKey, {
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType, data: base64Data } },
-          ],
-        },
-      ],
+      contents: [{
+        role: 'user',
+        parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }],
+      }],
       generationConfig: { temperature: 0, maxOutputTokens: 512 },
     });
 
     if (!resultado.ok) {
       console.error('Erro Gemini:', JSON.stringify(resultado.data));
-      return res.status(502).json({
-        error: resultado.data?.error?.message || 'Erro ao consultar o Gemini',
-      });
+      return res.status(502).json({ error: resultado.data?.error?.message || 'Erro ao consultar o Gemini' });
     }
 
     const texto = (resultado.data?.candidates?.[0]?.content?.parts?.[0]?.text || '').toUpperCase();
     console.log('Gemini respondeu:', texto);
 
-    const aprovado =
-      texto.includes('APROVADO') && !texto.includes('REPROVADO') && !texto.includes('NÃO');
+    const aprovado = texto.includes('APROVADO') && !texto.includes('REPROVADO') && !texto.includes('NÃO');
+
+    if (aprovado) {
+      let encerrou;
+      try {
+        encerrou = await encerrarEvento(id);
+      } catch (e) {
+        console.error('Falha ao encerrar evento:', e);
+        return res.status(502).json({ error: 'Foto aprovada, mas não foi possível desligar o alarme: ' + e.message });
+      }
+      if (!encerrou) return res.status(409).json({ error: 'Este alarme já foi desligado' });
+    }
 
     return res.status(200).json({ resultado: aprovado ? 'APROVADO' : 'REPROVADO' });
   } catch (err) {
