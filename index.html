@@ -530,6 +530,9 @@
                         <i data-lucide="aperture" class="w-10 h-10 text-electricCyan mx-auto opacity-80"></i>
                         <p class="text-xs text-slate-300">Use a câmera do seu dispositivo ou envie uma foto</p>
                         <div class="flex flex-wrap justify-center gap-3">
+                             <button type="button" onclick="resetCameraDropzone()" class="mt-2 text-xs text-slate-400 hover:text-white underline">
+                                Escolher/Tirar outra foto
+                            </button>
                             <button type="button" onclick="startWebcam()" class="px-3.5 py-2 rounded-xl bg-electricBlue hover:bg-blue-600 text-white text-xs font-semibold flex items-center gap-1.5 transition">
                                 <i data-lucide="video" class="w-4 h-4"></i> Abrir Câmera
                             </button>
@@ -657,14 +660,32 @@
         }
 
         // --- INITIALIZATION ---
-        window.onload = async function() {
+      window.onload = async function() {
             lucide.createIcons();
             startLiveClock();
             await loadAlarmsFromDatabase();
             await loadHistoryFromDatabase();
             updateCountdown();
             setInterval(updateCountdown, 1000);
-        };
+
+            // Recupera evento ativo se deu F5 durante o alarme
+            const savedEventId = localStorage.getItem('smartwake_active_event_id');
+            const savedAlarmId = localStorage.getItem('smartwake_active_alarm_id');
+            
+            if (savedEventId && savedAlarmId) {
+                state.ringingEventId = Number(savedEventId);
+                state.ringingAlarmId = Number(savedAlarmId);
+                
+                const activeAlarm = state.alarms.find(a => a.id === state.ringingAlarmId);
+                if (activeAlarm) {
+                    const challengeTitleEl = document.getElementById('emergency-challenge-title');
+                    if (challengeTitleEl) challengeTitleEl.innerText = `Tire uma foto da sua ${activeAlarm.challenge}!`;
+                    
+                    document.getElementById('emergencyAlarmScreen').classList.remove('hidden');
+                    startAudioAlarm();
+        }
+    }
+};
         // Buscar alarmes salvos no Supabase
         async function loadAlarmsFromDatabase() {
             const { data, error } = await supabaseClient
@@ -1058,6 +1079,13 @@
     state.ringingAlarmId = activeAlarm.id;
     state.ringingEventId = ev.id;
 
+    state.ringingAlarmId = activeAlarm.id;
+    state.ringingEventId = ev.id;
+
+    localStorage.setItem('smartwake_active_event_id', ev.id);
+    localStorage.setItem('smartwake_active_alarm_id', activeAlarm.id);
+    resetCameraDropzone(); // Garante a zona de upload limpa ao iniciar
+
     // 2. Atualiza o título do desafio no modal de emergência com base no alarme atual
     const challengeTitleEl = document.getElementById('emergency-challenge-title');
     if (challengeTitleEl) {
@@ -1145,6 +1173,35 @@
             document.getElementById('webcam-feed').classList.add('hidden');
             document.getElementById('webcam-controls').classList.add('hidden');
         }
+      
+        // ADICIONE A FUNÇÃO NOVA AQUI:
+        function resetCameraDropzone() {
+            state.selectedImageData = null;
+            stopWebcam();
+            
+            const preview = document.getElementById('image-preview');
+            if (preview) {
+                preview.src = '';
+                preview.classList.add('hidden');
+            }
+            
+            const placeholder = document.getElementById('upload-placeholder');
+            if (placeholder) {
+                placeholder.classList.remove('hidden');
+            }
+
+            const btn = document.getElementById('validate-btn');
+            if (btn) {
+                btn.disabled = true;
+                btn.className = "w-full py-3.5 rounded-xl bg-slate-800 text-slate-500 font-bold text-sm tracking-wide transition shadow-lg flex items-center justify-center gap-2 cursor-not-allowed";
+                btn.innerHTML = `<i data-lucide="shield-check" class="w-5 h-5"></i> Validar Imagem e Desligar ESP32`;
+            }
+            if (typeof lucide !== 'undefined') lucide.createIcons();
+        }
+
+
+
+
 
         function handleFileSelect(event) {
             const file = event.target.files[0];
@@ -1194,7 +1251,7 @@
             const btn = document.getElementById('validate-btn');
 
             if (!state.selectedImageData) {
-                alert("Nenhuma foto capturada ou selecionada! Tire uma foto primeiro.");
+                showToast("Nenhuma foto capturada ou selecionada! Tire uma foto primeiro.", "error");
                 return;
             }
 
@@ -1234,7 +1291,14 @@
                 if (textoResposta.includes("APROVADO") && !textoResposta.includes("REPROVADO")) {
                     stopAudioAlarm();
                     if (state.alarmInterval) clearInterval(state.alarmInterval);
+
+                    localStorage.removeItem('smartwake_active_event_id');
+                    localStorage.removeItem('smartwake_active_alarm_id');
+
+
+
                     document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+                    resetCameraDropzone();
 
                     try {
                         await supabaseClient.from('alarm_logs').insert([{
@@ -1251,13 +1315,15 @@
                     document.getElementById('victory-time').innerText = `${state.elapsedSeconds}s`;
                     document.getElementById('victoryModal').classList.remove('hidden');
                 } else {
-                    alert(`A IA rejeitou a foto. Certifique-se de que o objeto (${requiredChallenge}) está visível e com boa iluminação.`);
+                   
+                    showToast(`A IA rejeitou a foto. Certifique-se de que o objeto (${requiredChallenge}) está visível e com boa iluminação.`, "error");
+                    resetCameraDropzone();
                 }
             } catch (err) {
                 console.error("Erro crítico:", err);
-                alert(err.name === 'AbortError'
+                showToast(err.name === 'AbortError'
                     ? "A validação demorou demais. Verifique a conexão e tente novamente."
-                    : "Erro ao validar: " + err.message);
+                    : "Erro ao validar: " + err.message, "error");
             } finally {
                 clearTimeout(timeoutId);
                 if (!document.getElementById('emergencyAlarmScreen').classList.contains('hidden')) {
@@ -1297,8 +1363,17 @@
                 info: 'info'
             };
 
-            toast.className = `px-4 py-3 rounded-xl border backdrop-blur-lg shadow-xl text-xs font-medium flex items-center gap-2.5 transition-all duration-300 transform translate-y-2 opacity-0 ${bgColors[type] || bgColors.info}`;
-            toast.innerHTML = `<i data-lucide="${icons[type]}" class="w-4 h-4 shrink-0"></i> <span>${message}</span>`;
+            toast.className = `w-full max-w-sm break-words px-4 py-3 rounded-xl border backdrop-blur-lg shadow-xl text-xs font-medium flex items-center gap-2.5 transition-all duration-300 transform translate-y-2 opacity-0 ${bgColors[type] || bgColors.info}`;
+            toast.setAttribute('role', type === "error" ? "alert" : "status");
+
+            const icon = document.createElement('i');
+            icon.setAttribute('data-lucide', icons[type] || icons.info);
+            icon.className = "w-4 h-4 shrink-0";
+
+            const text = document.createElement('span');
+            text.textContent = message;
+
+            toast.append(icon, text);
 
             container.appendChild(toast);
             lucide.createIcons();
