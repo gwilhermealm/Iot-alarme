@@ -674,22 +674,18 @@
             escutarEventos();
 
             // Recupera evento ativo se deu F5 durante o alarme
-            const savedEventId = localStorage.getItem('smartwake_active_event_id');
-            const savedAlarmId = localStorage.getItem('smartwake_active_alarm_id');
-            
-            if (savedEventId && savedAlarmId) {
-                state.ringingEventId = Number(savedEventId);
-                state.ringingAlarmId = Number(savedAlarmId);
-                
-                const activeAlarm = state.alarms.find(a => a.id === state.ringingAlarmId);
-                if (activeAlarm) {
-                    const challengeTitleEl = document.getElementById('emergency-challenge-title');
-                    if (challengeTitleEl) challengeTitleEl.innerText = `Tire uma foto da sua ${activeAlarm.challenge}!`;
-                    
-                    document.getElementById('emergencyAlarmScreen').classList.remove('hidden');
-                    startAudioAlarm();
-        }
-    }
+          const savedEventId = localStorage.getItem('smartwake_active_event_id');
+            if (savedEventId) {
+                const { data } = await supabaseClient
+                    .from('alarm_events').select('*')
+                    .eq('id', Number(savedEventId)).maybeSingle();
+                if (data && data.status === 'ringing') {
+                    mostrarTelaAlarme(data);
+                } else {
+                    localStorage.removeItem('smartwake_active_event_id');
+                    localStorage.removeItem('smartwake_active_alarm_id');
+                }
+            }
 };
         // Buscar alarmes salvos no Supabase
         async function loadAlarmsFromDatabase() {
