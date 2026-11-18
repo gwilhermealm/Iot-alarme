@@ -1,55 +1,52 @@
 // api/validar-foto.mjs
 // Serverless Function da Vercel (ESM). Chama a API REST do Gemini com fetch.
 // Variáveis de ambiente na Vercel: GEMINI_API_KEY e SUPABASE_SERVICE_ROLE_KEY (nunca no front-end).
+// Opcional: GEMINI_MODELS (lista separada por vírgula).
 
-const MODELOS = (process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || 'gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash')
+const MODELOS = (process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite,gemini-3.8-flash,gemini-4-hydrogen')
   .split(',').map((m) => m.trim()).filter(Boolean);
-const TENTATIVAS_POR_MODELO = 1;
-const TIMEOUT_POR_TENTATIVA_MS = 10000;
-const ORCAMENTO_TOTAL_MS = 27000; // abaixo do maxDuration de 30s
+const TIMEOUT_MS = 25000; // abaixo do maxDuration (30s) do vercel.json
 
-const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
-
+// Chama todos os modelos ao mesmo tempo e usa o primeiro que responder com sucesso.
 async function chamarGemini(apiKey, body) {
-  const inicio = Date.now();
-  let ultimo = { ok: false, status: 500, data: { error: { message: 'Nenhum modelo disponível' } } };
-
-  for (const modelo of MODELOS) {
+  const tentativas = MODELOS.map(async (modelo) => {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`;
-
-    for (let tentativa = 1; tentativa <= TENTATIVAS_POR_MODELO; tentativa++) {
-      if (Date.now() - inicio > ORCAMENTO_TOTAL_MS) return ultimo;
-
-      let resp;
-      try {
-        resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(TIMEOUT_POR_TENTATIVA_MS),
-        });
-      } catch (e) {
-        console.warn(`[${modelo}] tentativa ${tentativa} sem resposta: ${e.name}`);
-        ultimo = { ok: false, status: 504, data: { error: { message: 'O Gemini demorou demais para responder' } } };
-        continue;
-      }
-
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok) {
-        console.log(`Respondeu o modelo: ${modelo}`);
-        return { ok: true, data };
-      }
-
-      ultimo = { ok: false, status: resp.status, data };
-      console.warn(`[${modelo}] tentativa ${tentativa} falhou (${resp.status}): ${data?.error?.message || ''}`);
-
-      if (resp.status === 404) break;
-      if (![429, 500, 503].includes(resp.status)) return ultimo;
-
-      await esperar(600 * tentativa);
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(TIMEOUT_MS),
+      });
+    } catch (e) {
+      console.warn(`[${modelo}] sem resposta: ${e.name}`);
+      throw Object.assign(new Error('timeout'), {
+        status: 504,
+        data: { error: { message: 'O Gemini demorou demais para responder' } },
+      });
     }
+
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      console.warn(`[${modelo}] falhou (${resp.status}): ${data?.error?.message || ''}`);
+      throw Object.assign(new Error('falha'), { status: resp.status, data });
+    }
+
+    console.log(`Respondeu o modelo: ${modelo}`);
+    return { ok: true, data };
+  });
+
+  try {
+    return await Promise.any(tentativas);
+  } catch (agg) {
+    const e = agg.errors?.[0];
+    return {
+      ok: false,
+      status: e?.status || 504,
+      data: e?.data || { error: { message: 'O Gemini demorou demais para responder' } },
+    };
   }
-  return ultimo;
 }
 
 // --- Supabase ---
@@ -141,7 +138,12 @@ export default async function handler(req, res) {
         role: 'user',
         parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64Data } }],
       }],
-      generationConfig: { temperature: 0, maxOutputTokens: 512 },
+      // Sem temperature/top_p/top_k (obsoletos nos modelos novos).
+      // Se a API devolver 400 reclamando de thinkingConfig, apague esse bloco.
+      generationConfig: {
+        maxOutputTokens: 1024,
+        thinkingConfig: { thinkingLevel: 'low' },
+      },
     });
 
     if (!resultado.ok) {
@@ -149,7 +151,9 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: resultado.data?.error?.message || 'Erro ao consultar o Gemini' });
     }
 
-    const texto = (resultado.data?.candidates?.[0]?.content?.parts?.[0]?.text || '').toUpperCase();
+    // Junta só as partes de texto da resposta (ignora partes de "raciocínio").
+    const partes = resultado.data?.candidates?.[0]?.content?.parts || [];
+    const texto = partes.filter((p) => !p.thought).map((p) => p.text || '').join(' ').toUpperCase();
     console.log('Gemini respondeu:', texto);
 
     const aprovado = texto.includes('APROVADO') && !texto.includes('REPROVADO') && !texto.includes('NÃO');
