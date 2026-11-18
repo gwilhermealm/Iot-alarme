@@ -4,9 +4,9 @@
 
 const MODELOS = (process.env.GEMINI_MODELS || process.env.GEMINI_MODEL || 'gemini-3.8-flash,gemini-3.7-flash,gemini-3.5-flash')
   .split(',').map((m) => m.trim()).filter(Boolean);
-const TENTATIVAS_POR_MODELO = 2;
-const TIMEOUT_POR_TENTATIVA_MS = 6000;
-const ORCAMENTO_TOTAL_MS = 24000; // abaixo do maxDuration (30s) do vercel.json
+const TENTATIVAS_POR_MODELO = 1;
+const TIMEOUT_POR_TENTATIVA_MS = 10000;
+const ORCAMENTO_TOTAL_MS = 27000; // abaixo do maxDuration de 30s
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
