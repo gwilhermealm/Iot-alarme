@@ -670,6 +670,9 @@
             updateCountdown();
             setInterval(updateCountdown, 1000);
 
+            await verificarAlarmeTocando();
+            escutarEventos();
+
             // Recupera evento ativo se deu F5 durante o alarme
             const savedEventId = localStorage.getItem('smartwake_active_event_id');
             const savedAlarmId = localStorage.getItem('smartwake_active_alarm_id');
@@ -794,7 +797,92 @@
                 showToast("Alarme removido com sucesso.", "info");
         }
 
+// --- ALARME TOCANDO (disparado pelo ESP32 ou pelo botão de teste) ---
+const JANELA_MS = 15 * 60 * 1000; // só considera eventos dos últimos 15 minutos
 
+function mostrarTelaAlarme(ev) {
+    if (state.ringingEventId === ev.id) return; // já está tocando
+    const alarm = state.alarms.find(a => a.id === ev.alarm_id);
+    if (!alarm) return;
+
+    state.ringingAlarmId = ev.alarm_id;
+    state.ringingEventId = ev.id;
+    localStorage.setItem('smartwake_active_event_id', ev.id);
+    localStorage.setItem('smartwake_active_alarm_id', ev.alarm_id);
+
+    resetCameraDropzone();
+    document.getElementById('emergency-challenge-title').innerText =
+        `Tire uma foto da sua ${alarm.challenge}!`;
+    document.getElementById('emergencyAlarmScreen').classList.remove('hidden');
+
+    // Contador de tempo decorrido
+    state.elapsedSeconds = Math.max(0, Math.floor((Date.now() - new Date(ev.fired_at)) / 1000));
+    if (state.alarmInterval) clearInterval(state.alarmInterval);
+    state.alarmInterval = setInterval(() => {
+        state.elapsedSeconds++;
+        const pad = n => String(n).padStart(2, '0');
+        const el = document.getElementById('emergency-elapsed');
+        if (el) el.innerText = `${pad(Math.floor(state.elapsedSeconds / 60))}:${pad(state.elapsedSeconds % 60)}`;
+    }, 1000);
+
+    // Indicadores de buzzer na interface
+    state.espBuzzer = true;
+    const cardBuzzer = document.getElementById('card-esp-buzzer');
+    if (cardBuzzer) {
+        cardBuzzer.innerText = "DISPARADO";
+        cardBuzzer.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white animate-pulse";
+    }
+    const sidebarBuzzer = document.getElementById('sidebar-esp-buzzer');
+    if (sidebarBuzzer) {
+        sidebarBuzzer.innerText = "TOCANDO!";
+        sidebarBuzzer.className = "text-red-400 font-bold animate-pulse";
+    }
+
+    startAudioAlarm();
+    lucide.createIcons();
+}
+
+function fecharTelaAlarme() {
+    stopAudioAlarm();
+    if (state.alarmInterval) clearInterval(state.alarmInterval);
+    state.ringingEventId = null;
+    state.ringingAlarmId = null;
+    localStorage.removeItem('smartwake_active_event_id');
+    localStorage.removeItem('smartwake_active_alarm_id');
+    document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+
+    state.espBuzzer = false;
+    const cardBuzzer = document.getElementById('card-esp-buzzer');
+    if (cardBuzzer) {
+        cardBuzzer.innerText = "DESLIGADO";
+        cardBuzzer.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400";
+    }
+    const sidebarBuzzer = document.getElementById('sidebar-esp-buzzer');
+    if (sidebarBuzzer) {
+        sidebarBuzzer.innerText = "DESLIGADO";
+        sidebarBuzzer.className = "text-slate-400";
+    }
+}
+
+async function verificarAlarmeTocando() {
+    if (state.ringingEventId) return;
+    const desde = new Date(Date.now() - JANELA_MS).toISOString();
+    const { data } = await supabaseClient
+        .from('alarm_events').select('*')
+        .eq('status', 'ringing').gte('fired_at', desde)
+        .order('id', { ascending: false }).limit(1);
+    if (data && data.length) mostrarTelaAlarme(data[0]);
+}
+
+function escutarEventos() {
+    supabaseClient.channel('alarm-events')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'alarm_events' },
+            p => { if (p.new.status === 'ringing') mostrarTelaAlarme(p.new); })
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'alarm_events' },
+            p => { if (p.new.status === 'stopped' && p.new.id === state.ringingEventId) fecharTelaAlarme(); })
+        .subscribe();
+    setInterval(verificarAlarmeTocando, 5000); // plano B caso o Realtime falhe
+}
 
 
 
@@ -1055,8 +1143,8 @@
         }
 
         // --- EMERGENCY ACTIVE ALARM SCREEN & WEBCAM ---
-        async function triggerEmergencyAlarmDemo() {
-    // 1. Usa o alarme ativo mais próximo (ou o primeiro cadastrado, se não houver ativos)
+    async function triggerEmergencyAlarmDemo() {
+    // Usa o alarme ativo mais próximo (ou o primeiro cadastrado, se não houver ativos)
     const proximo = getNextAlarm();
     const activeAlarm = proximo ? proximo.alarm : state.alarms[0];
 
@@ -1078,66 +1166,10 @@
         return;
     }
 
-    state.ringingAlarmId = activeAlarm.id;
-    state.ringingEventId = ev.id;
+    // Abre a tela do desafio (se o Realtime já abriu, a função ignora a segunda chamada)
+    mostrarTelaAlarme(ev);
 
-    state.ringingAlarmId = activeAlarm.id;
-    state.ringingEventId = ev.id;
-
-    localStorage.setItem('smartwake_active_event_id', ev.id);
-    localStorage.setItem('smartwake_active_alarm_id', activeAlarm.id);
-    resetCameraDropzone(); // Garante a zona de upload limpa ao iniciar
-
-    // 2. Atualiza o título do desafio no modal de emergência com base no alarme atual
-    const challengeTitleEl = document.getElementById('emergency-challenge-title');
-    if (challengeTitleEl) {
-        challengeTitleEl.innerText = `Tire uma foto da sua ${activeAlarm.challenge}!`;
-    }
-
-    // 3. Exibe a tela de emergência em tela cheia
-    const emergencyScreen = document.getElementById('emergencyAlarmScreen');
-    if (emergencyScreen) {
-        emergencyScreen.classList.remove('hidden');
-    }
     
-    // 4. Reseta e inicia os contadores de tempo
-    state.elapsedSeconds = 0;
-    state.alarmStartTime = Date.now();
-    
-    if (state.alarmInterval) clearInterval(state.alarmInterval);
-    
-    state.alarmInterval = setInterval(() => {
-        state.elapsedSeconds++;
-        const pad = n => String(n).padStart(2, '0');
-        const mins = Math.floor(state.elapsedSeconds / 60);
-        const secs = state.elapsedSeconds % 60;
-        const elapsedEl = document.getElementById('emergency-elapsed');
-        if (elapsedEl) {
-            elapsedEl.innerText = `${pad(mins)}:${pad(secs)}`;
-        }
-    }, 1000);
-
-    // 5. Simula o estado de buzzer disparado no ESP32 na interface
-    state.espBuzzer = true;
-    const cardBuzzer = document.getElementById('card-esp-buzzer');
-    if (cardBuzzer) {
-        cardBuzzer.innerText = "DISPARADO";
-        cardBuzzer.className = "px-2 py-0.5 rounded text-[10px] font-bold bg-red-500 text-white animate-pulse";
-    }
-    
-    const sidebarBuzzer = document.getElementById('sidebar-esp-buzzer');
-    if (sidebarBuzzer) {
-        sidebarBuzzer.innerText = "TOCANDO!";
-        sidebarBuzzer.className = "text-red-400 font-bold animate-pulse";
-    }
-
-    // 6. Inicia o sintetizador de áudio sonoro no navegador
-    startAudioAlarm();
-    
-    // Recarrega os ícones caso necessário
-    if (typeof lucide !== 'undefined') {
-        lucide.createIcons();
-    }
 }
         // WEBCAM ACCESS
         async function startWebcam() {
@@ -1291,16 +1323,9 @@
                 const textoResposta = String(dados.resultado || '').toUpperCase();
 
                 if (textoResposta.includes("APROVADO") && !textoResposta.includes("REPROVADO")) {
-                    stopAudioAlarm();
-                    if (state.alarmInterval) clearInterval(state.alarmInterval);
-
-                    localStorage.removeItem('smartwake_active_event_id');
-                    localStorage.removeItem('smartwake_active_alarm_id');
-
-
-
-                    document.getElementById('emergencyAlarmScreen').classList.add('hidden');
+                    fecharTelaAlarme();
                     resetCameraDropzone();
+                   
 
                     try {
                         await supabaseClient.from('alarm_logs').insert([{
